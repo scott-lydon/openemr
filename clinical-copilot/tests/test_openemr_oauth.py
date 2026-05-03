@@ -98,7 +98,12 @@ def test_token_cache_rejects_non_pem_file(tmp_path: Path) -> None:
 def test_assertion_has_required_smart_backend_services_claims(
     tmp_path: Path,
 ) -> None:
-    """RFC 7523 §3 + SMART Backend Services profile: iss, sub, aud, exp, jti."""
+    """RFC 7523 §3 + SMART Backend Services profile: iss, sub, aud, exp, jti.
+
+    Algorithm MUST be RS384 (OpenEMR's JWTClientAuthenticationService
+    hard-codes RsaSha384Signer). Header MUST carry kid so the verifier
+    can pick the right JWK out of a multi-key JWKS.
+    """
     key_path, public_key = _make_key_file(tmp_path)
     cache = OpenEMRTokenCache(
         _FakeSettings(
@@ -108,13 +113,14 @@ def test_assertion_has_required_smart_backend_services_claims(
     )
     token = cache._build_client_assertion(audience="https://emr.example/token")
     header = jwt.get_unverified_header(token)
-    assert header["alg"] == "RS256"
+    assert header["alg"] == "RS384"
     assert header["typ"] == "JWT"
+    assert header["kid"] == "clinical-copilot-sidecar"
 
     claims = jwt.decode(
         token,
         public_key,
-        algorithms=["RS256"],
+        algorithms=["RS384"],
         audience="https://emr.example/token",
     )
     assert claims["iss"] == "my-client-id"
@@ -151,7 +157,7 @@ def test_assertion_signature_verifies_with_public_key(tmp_path: Path) -> None:
     jwt.decode(
         token,
         public_key,
-        algorithms=["RS256"],
+        algorithms=["RS384"],
         audience="https://emr/token",
     )
 
@@ -167,6 +173,6 @@ def test_assertion_rejected_by_wrong_public_key(tmp_path: Path) -> None:
         jwt.decode(
             token,
             other_key.public_key(),
-            algorithms=["RS256"],
+            algorithms=["RS384"],
             audience="https://emr/token",
         )

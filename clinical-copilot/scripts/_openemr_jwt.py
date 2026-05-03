@@ -65,12 +65,18 @@ def _int_to_b64url(value: int) -> str:
 
 
 def _public_jwk_from_rsa(public_key: rsa.RSAPublicKey, kid: str) -> dict:
-    """Build a JWK (RFC 7517 §4) for an RSA public key."""
+    """Build a JWK (RFC 7517 §4) for an RSA public key.
+
+    alg = RS384 because OpenEMR's JWTClientAuthenticationService uses
+    RsaSha384Signer to verify client assertions; an RS256-tagged key
+    would be rejected at verification time even though the modulus
+    and exponent are correct.
+    """
     numbers = public_key.public_numbers()
     return {
         "kty": "RSA",
         "use": "sig",
-        "alg": "RS256",
+        "alg": "RS384",
         "kid": kid,
         "n": _int_to_b64url(numbers.n),
         "e": _int_to_b64url(numbers.e),
@@ -143,11 +149,18 @@ def cmd_print_jwks(args: argparse.Namespace) -> int:
 
 
 def _build_assertion(
-    *, client_id: str, private_key_pem: bytes, token_url: str
+    *, client_id: str, private_key_pem: bytes, token_url: str, kid: str
 ) -> str:
-    """Mint a SMART Backend Services jwt-bearer assertion."""
+    """Mint a SMART Backend Services jwt-bearer assertion.
+
+    Algorithm RS384 + the matching SHA-384 hash, per OpenEMR's
+    JWTClientAuthenticationService (which hard-codes RsaSha384Signer
+    for client-assertion verification). The header carries the same
+    `kid` that appears in the JWKS so OpenEMR's JsonWebKeySet can
+    pick the right key out of a multi-key set.
+    """
     now = int(time.time())
-    header = {"alg": "RS256", "typ": "JWT"}
+    header = {"alg": "RS384", "typ": "JWT", "kid": kid}
     payload = {
         "iss": client_id,
         "sub": client_id,
@@ -165,7 +178,7 @@ def _build_assertion(
             f"expected an RSA private key, got {type(key).__name__}; "
             "regenerate with scripts/_openemr_jwt.py generate-keypair"
         )
-    sig = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+    sig = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA384())
     return f"{h}.{p}.{_b64url(sig)}"
 
 
@@ -183,6 +196,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             client_id=args.client_id,
             private_key_pem=pem,
             token_url=args.token_url,
+            kid=args.kid,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR: failed to build jwt-bearer assertion: {exc}", file=sys.stderr)
@@ -280,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--private-key", required=True)
     v.add_argument("--token-url", required=True)
     v.add_argument("--scope", default="system/Patient.read")
+    v.add_argument("--kid", default="clinical-copilot-sidecar",
+                   help="JWT kid header (must match the JWKS key id)")
     v.add_argument("--insecure", action="store_true", help="Skip TLS verification")
     v.set_defaults(func=cmd_verify)
 

@@ -190,6 +190,13 @@ class OpenEMRTokenCache:
           exp     : now + ≤5 min (we use 4)
           jti     : a one-shot nonce so OpenEMR can detect replay
           iat     : issued-at, useful for diagnostics
+
+        Algorithm is RS384, not RS256: OpenEMR's
+        JWTClientAuthenticationService hard-codes RsaSha384Signer for
+        client-assertion signature verification (RS256 assertions are
+        rejected with `invalid_client / "Client authentication failed"`).
+        The JWK header carries `kid` so OpenEMR's JsonWebKeySet picks
+        the right key out of the registered set.
         """
         now = int(time.time())
         payload = {
@@ -200,9 +207,14 @@ class OpenEMRTokenCache:
             "iat": now,
             "jti": secrets.token_urlsafe(16),
         }
-        # PyJWT picks the right RS256 implementation from the
+        # PyJWT picks the right RS384 implementation from the
         # cryptography backend (PyJWT[crypto] dependency).
-        return jwt.encode(payload, self._private_key_pem, algorithm="RS256")
+        return jwt.encode(
+            payload,
+            self._private_key_pem,
+            algorithm="RS384",
+            headers={"kid": "clinical-copilot-sidecar", "typ": "JWT"},
+        )
 
     async def _fetch_new(self) -> _CachedToken:
         endpoint = f"{self._settings.openemr_oauth_base.rstrip('/')}/token"
