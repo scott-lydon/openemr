@@ -21,6 +21,15 @@ Three subcommands so the bash wrapper stays declarative:
       to stderr and exits non-zero with an exit code that mirrors the
       bash wrapper's: 0=ok, 3=verification failed, 1=other.
 
+  fhir-query --client-id ID --private-key PATH --token-url URL
+             --fhir-base URL --path 'Condition?patient=…' [--scope SCOPE]
+      Same handshake as `verify` to obtain an access token, then GET an
+      arbitrary FHIR path under --fhir-base with that token. Pretty-prints
+      the JSON response to stdout. Use to compare what OpenEMR FHIR
+      actually returns vs. what is in the database — answers
+      "FHIR-returned-empty vs sidecar-dropped-them" without instrumenting
+      the sidecar.
+
 The script is dependency-light by design — only `cryptography` (for
 RSA key generation) and `urllib`/`json` from the stdlib. It does NOT
 depend on PyJWT so it can run from a fresh interpreter before the
@@ -182,6 +191,122 @@ def _build_assertion(
     return f"{h}.{p}.{_b64url(sig)}"
 
 
+def _fetch_access_token(
+    *,
+    client_id: str,
+    private_key_pem: bytes,
+    token_url: str,
+    scope: str,
+    kid: str,
+    insecure: bool,
+) -> tuple[int, str]:
+    """Mint an assertion and POST to /token. Returns (http_status, body)."""
+    assertion = _build_assertion(
+        client_id=client_id,
+        private_key_pem=private_key_pem,
+        token_url=token_url,
+        kid=kid,
+    )
+    body = urllib.parse.urlencode(
+        {
+            "grant_type": "client_credentials",
+            "scope": scope,
+            "client_assertion_type": _JWT_BEARER_ASSERTION_TYPE,
+            "client_assertion": assertion,
+        }
+    ).encode("ascii")
+    req = urllib.request.Request(
+        url=token_url,
+        data=body,
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    import ssl
+
+    ctx = ssl.create_default_context()
+    if insecure:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        return exc.code, body_text
+
+
+def cmd_fhir_query(args: argparse.Namespace) -> int:
+    """Mint an access token, GET a FHIR path with it, print the JSON."""
+    private_path = Path(args.private_key).expanduser()
+    if not private_path.exists():
+        print(f"ERROR: private key not found at {private_path}", file=sys.stderr)
+        return 1
+
+    insecure = bool(args.insecure)
+    status, body = _fetch_access_token(
+        client_id=args.client_id,
+        private_key_pem=private_path.read_bytes(),
+        token_url=args.token_url,
+        scope=args.scope,
+        kid=args.kid,
+        insecure=insecure,
+    )
+    if status != 200:
+        print(f"ERROR: /token returned HTTP {status}: {body[:300]}", file=sys.stderr)
+        return 3
+    try:
+        access_token = json.loads(body)["access_token"]
+    except (json.JSONDecodeError, KeyError) as exc:
+        print(f"ERROR: could not parse access_token from /token: {exc}", file=sys.stderr)
+        print(body[:300], file=sys.stderr)
+        return 3
+
+    fhir_url = args.fhir_base.rstrip("/") + "/" + args.path.lstrip("/")
+    req = urllib.request.Request(
+        url=fhir_url,
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/fhir+json",
+        },
+    )
+    import ssl as _ssl
+    ctx = _ssl.create_default_context()
+    if insecure:
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            data = resp.read().decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(data)
+                print(json.dumps(parsed, indent=2))
+                # Print a tiny summary to stderr so it does not pollute stdout
+                # if the user is piping the JSON elsewhere.
+                if isinstance(parsed, dict) and parsed.get("resourceType") == "Bundle":
+                    total = parsed.get("total")
+                    entries = len(parsed.get("entry") or [])
+                    print(
+                        f"-- Bundle: total={total}, entries={entries}, url={fhir_url}",
+                        file=sys.stderr,
+                    )
+            except json.JSONDecodeError:
+                print(data)
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        print(
+            f"ERROR: {fhir_url} returned HTTP {exc.code}; body: {body_text[:300]}",
+            file=sys.stderr,
+        )
+        return 3
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     private_path = Path(args.private_key).expanduser()
     if not private_path.exists():
@@ -298,6 +423,22 @@ def main(argv: list[str] | None = None) -> int:
                    help="JWT kid header (must match the JWKS key id)")
     v.add_argument("--insecure", action="store_true", help="Skip TLS verification")
     v.set_defaults(func=cmd_verify)
+
+    f = sub.add_parser(
+        "fhir-query",
+        help="GET an arbitrary FHIR path with a freshly-minted access token",
+    )
+    f.add_argument("--client-id", required=True)
+    f.add_argument("--private-key", required=True)
+    f.add_argument("--token-url", required=True)
+    f.add_argument("--fhir-base", required=True,
+                   help="FHIR base URL, e.g. https://localhost:9300/apis/default/fhir")
+    f.add_argument("--path", required=True,
+                   help="FHIR path beneath --fhir-base, e.g. 'Condition?patient=<uuid>'")
+    f.add_argument("--scope", default="system/Patient.read system/Condition.read system/MedicationRequest.read system/AllergyIntolerance.read system/Observation.read system/Encounter.read system/Procedure.read system/DocumentReference.read")
+    f.add_argument("--kid", default="clinical-copilot-sidecar")
+    f.add_argument("--insecure", action="store_true")
+    f.set_defaults(func=cmd_fhir_query)
 
     args = parser.parse_args(argv)
     return int(args.func(args))
