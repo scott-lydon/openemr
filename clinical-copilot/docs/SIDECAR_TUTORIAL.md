@@ -9,6 +9,15 @@ A self-contained, no-server preview of the same screens lives at
 browser to see the rendered output without booting the service. The same
 file is mirrored to `Gauntlet/sidecar-demo-tutorial.html` for convenience.
 
+> **Real OpenEMR setup:** this tutorial uses the deterministic mock
+> provider against bundled fixture patients, so no OpenEMR registration
+> is involved. If you want the sidecar talking to a real OpenEMR docker
+> stack (development-easy compose), use the one-command flow described
+> in the project root README under "Setup against a real OpenEMR
+> (one command, idempotent)". That script handles the SMART Backend
+> Services jwt-bearer keypair, the API client provisioning, the `.env`
+> rewrite, and the `/diagnostic`-driven drift check automatically.
+
 ---
 
 ## Step 0 — One-time setup
