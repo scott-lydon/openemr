@@ -131,12 +131,36 @@ echo "OpenEMR container: $CONTAINER"
 #                       only; client_credentials ignores it)
 #   --launch-uri      : SMART launch URL (also unused for backend services)
 #
-# The command writes a Symfony table to stdout containing the new
-# Client ID and Client Secret. We capture stdout to parse them out.
+# The container's default WORKDIR is not the OpenEMR webroot, so we
+# must run the command with bin/console resolved relative to the
+# webroot mount. The development-easy compose mounts the source at
+# /var/www/localhost/htdocs/openemr; we sniff for the bin/console
+# under that path first and fall back to /openemr (the read-only
+# alternate mount) if anything else changed.
+OPENEMR_ROOT_GUESSES=(
+  '/var/www/localhost/htdocs/openemr'
+  '/openemr'
+)
+OPENEMR_ROOT=""
+for guess in "${OPENEMR_ROOT_GUESSES[@]}"; do
+  if docker exec "$CONTAINER" test -f "$guess/bin/console"; then
+    OPENEMR_ROOT="$guess"
+    break
+  fi
+done
+
+if [ -z "$OPENEMR_ROOT" ]; then
+  echo "ERROR: bin/console not found inside container under any of:" >&2
+  printf '  %s\n' "${OPENEMR_ROOT_GUESSES[@]}" >&2
+  echo "Run \`docker exec $CONTAINER find / -name console -type f 2>/dev/null\` to locate it, then edit OPENEMR_ROOT_GUESSES in this script." >&2
+  print_manual_instructions
+  exit 1
+fi
+echo "OpenEMR webroot in container: $OPENEMR_ROOT"
 echo "Registering API client via bin/console openemr-dev:register-api-test-client …"
 
 set +e
-REG_OUTPUT="$(docker exec -u root "$CONTAINER" \
+REG_OUTPUT="$(docker exec -u root -w "$OPENEMR_ROOT" "$CONTAINER" \
   php bin/console openemr-dev:register-api-test-client \
     --site="$SITE" \
     --redirect-uri='http://localhost:8801/oauth/callback' \
