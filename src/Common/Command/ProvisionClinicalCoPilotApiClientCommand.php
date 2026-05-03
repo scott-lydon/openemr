@@ -108,6 +108,18 @@ final class ProvisionClinicalCoPilotApiClientCommand extends Command
                     . 'client_credentials does not use it but the column is NOT NULL.',
                     'http://localhost:8801/oauth/callback'
                 ),
+                new InputOption(
+                    'jwks-json',
+                    null,
+                    InputOption::VALUE_REQUIRED,
+                    'JSON Web Key Set (JWK Set per RFC 7517) for the SMART '
+                    . 'Backend Services jwt-bearer assertion verification. Either '
+                    . 'a literal JSON string or @/path/to/file.json. Required: '
+                    . 'OpenEMR\'s CustomClientCredentialsGrant only accepts '
+                    . 'jwt-bearer (HTTP Basic is rejected with "assertion type '
+                    . 'is not supported").',
+                    null
+                ),
             ]));
     }
 
@@ -116,6 +128,7 @@ final class ProvisionClinicalCoPilotApiClientCommand extends Command
         try {
             $site = (string) $input->getOption('site');
             $redirectUri = (string) $input->getOption('redirect-uri');
+            $jwksOpt = $input->getOption('jwks-json');
             if ($site === '') {
                 $this->fail('--site must be a non-empty string');
                 return Command::FAILURE;
@@ -124,6 +137,44 @@ final class ProvisionClinicalCoPilotApiClientCommand extends Command
                 $this->fail('--redirect-uri must be a non-empty string');
                 return Command::FAILURE;
             }
+            if (!is_string($jwksOpt) || $jwksOpt === '') {
+                $this->fail(
+                    '--jwks-json is required. Pass either an inline JSON string '
+                    . '\'{"keys":[...]}\' or @/abs/path/to/jwks.json.'
+                );
+                return Command::FAILURE;
+            }
+            // Resolve @file syntax. Avoids quoting headaches when passing
+            // the JWKS through `docker exec` from a shell wrapper.
+            if (str_starts_with($jwksOpt, '@')) {
+                $jwksPath = substr($jwksOpt, 1);
+                if ($jwksPath === '' || !is_file($jwksPath) || !is_readable($jwksPath)) {
+                    $this->fail("--jwks-json @{$jwksPath} not found or not readable inside the container");
+                    return Command::FAILURE;
+                }
+                $jwksJson = file_get_contents($jwksPath);
+                if ($jwksJson === false) {
+                    $this->fail("--jwks-json @{$jwksPath} could not be read");
+                    return Command::FAILURE;
+                }
+            } else {
+                $jwksJson = $jwksOpt;
+            }
+            // Parse + reserialize so we (a) reject malformed input here
+            // rather than letting OpenEMR's auth layer do it later with
+            // a vague error, and (b) normalise the wire form.
+            $jwksDecoded = json_decode($jwksJson, associative: true);
+            if (!is_array($jwksDecoded) || !isset($jwksDecoded['keys']) || !is_array($jwksDecoded['keys']) || $jwksDecoded['keys'] === []) {
+                $this->fail(
+                    '--jwks-json must decode to a JWK Set object with a non-empty '
+                    . '"keys" array; got ' . substr($jwksJson, 0, 200)
+                );
+                return Command::FAILURE;
+            }
+            $jwksJsonNormalised = json_encode(
+                $jwksDecoded,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+            );
 
             $repo = new ClientRepository();
 
@@ -160,7 +211,13 @@ final class ProvisionClinicalCoPilotApiClientCommand extends Command
                 'grant_types' => 'client_credentials',
                 'scope' => implode(' ', self::SYSTEM_SCOPES),
                 'dsi_type' => ClientEntity::DSI_TYPE_NONE,
+                // Inline JWKS so OpenEMR's JWTClientAuthenticationService
+                // can verify the sidecar's jwt-bearer assertions without
+                // needing to reach a jwks_uri over HTTP. The setup
+                // script generates the keypair locally and only passes
+                // the public half here.
                 'jwks_uri' => null,
+                'jwks' => $jwksJsonNormalised,
                 'initiate_login_uri' => null,
             ];
 
@@ -201,6 +258,9 @@ final class ProvisionClinicalCoPilotApiClientCommand extends Command
             //    contaminates this line.
             $payload = [
                 'client_id' => $clientId,
+                // Kept for backward compatibility with operators who
+                // expect a "secret" in the payload, but the sidecar
+                // does NOT use this any more — auth is jwt-bearer.
                 'client_secret' => $clientSecret,
                 'rotated' => $rotated,
                 'previous_count' => count($existing),
@@ -208,6 +268,8 @@ final class ProvisionClinicalCoPilotApiClientCommand extends Command
                 'name' => self::CLIENT_NAME,
                 'scope' => $info['scope'],
                 'redirect_uri' => $redirectUri,
+                'jwks_key_count' => count($jwksDecoded['keys']),
+                'auth_method' => 'private_key_jwt',
             ];
             $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
             $output->writeln($json);

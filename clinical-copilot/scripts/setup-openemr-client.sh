@@ -53,6 +53,10 @@ ENV_FILE="$COPILOT_ROOT/.env"
 ENV_EXAMPLE="$COPILOT_ROOT/.env.example"
 LAUNCH_SCRIPT="$COPILOT_ROOT/launch-sidecar.command"
 LAUNCH_LOG="$COPILOT_ROOT/.launch.log"
+KEYS_DIR="$COPILOT_ROOT/.keys"
+PRIVATE_KEY_PATH="$KEYS_DIR/openemr-jwt-bearer.pem"
+JWKS_PATH="$KEYS_DIR/openemr-jwt-bearer.jwks.json"
+JWT_HELPER="$SCRIPT_DIR/_openemr_jwt.py"
 SITE="default"
 RESTART=1
 FORCE=0
@@ -142,31 +146,25 @@ host_oauth_base() {
   echo "$raw" | sed 's|host\.docker\.internal|localhost|g'
 }
 
-# ─── Helper: verify a (client_id, client_secret) pair via /token ──────────
-# Returns 0 if OpenEMR issues an access_token, non-zero otherwise.
-# Prints the HTTP status and a snippet of the body to stderr on failure.
+# ─── Helper: verify a (client_id, private_key) pair via /token ────────────
+# Mints a real SMART Backend Services jwt-bearer assertion (RFC 7523),
+# POSTs to OpenEMR /token, and returns 0 only if an access_token comes
+# back. Delegates to scripts/_openemr_jwt.py so the JWT signing logic
+# lives in one place.
 verify_credentials() {
-  local id="$1" secret="$2"
+  local id="$1" key_path="$2"
   local base
   base="$(host_oauth_base)"
   local url="${base%/}/token"
-  local tmp
-  tmp="$(mktemp)"
-  local http
-  http="$(curl -sS -k -o "$tmp" -w '%{http_code}' \
-    -u "$id:$secret" \
-    --data 'grant_type=client_credentials&scope=system/Patient.read' \
-    "$url" 2>/dev/null || echo "000")"
-  if [ "$http" = "200" ] && grep -q '"access_token"' "$tmp"; then
-    rm -f "$tmp"
-    return 0
+  local insecure_flag=""
+  if [ "${base#https://}" != "$base" ]; then
+    insecure_flag="--insecure"
   fi
-  echo "  /token returned HTTP $http from $url" >&2
-  echo "  body (first 300 chars):" >&2
-  head -c 300 "$tmp" >&2
-  echo "" >&2
-  rm -f "$tmp"
-  return 1
+  python3 "$JWT_HELPER" verify \
+    --client-id "$id" \
+    --private-key "$key_path" \
+    --token-url "$url" \
+    $insecure_flag
 }
 
 # ─── 0. Bootstrap .env ────────────────────────────────────────────────────
@@ -224,32 +222,63 @@ if [ -z "$OPENEMR_ROOT" ]; then
 fi
 echo "OpenEMR webroot   : $OPENEMR_ROOT (in container)"
 
-# ─── 3. Skip provisioning when existing creds still work ──────────────────
+# ─── 3. Generate the RSA keypair (idempotent) ─────────────────────────────
+# RFC 7523 §3 — the sidecar signs jwt-bearer assertions with this
+# private key; OpenEMR verifies them against the JWKS we register on
+# the oauth_clients row in step 4. Re-running with the keypair
+# already in place leaves it untouched. --force regenerates.
+if [ "$FORCE" = "1" ]; then
+  echo "--force passed; removing any existing keypair so it is regenerated."
+  rm -f "$PRIVATE_KEY_PATH" "$JWKS_PATH"
+fi
+echo "Ensuring RSA keypair at $PRIVATE_KEY_PATH …"
+python3 "$JWT_HELPER" generate-keypair \
+  --private-out "$PRIVATE_KEY_PATH" \
+  --jwks-out "$JWKS_PATH" \
+  --kid 'clinical-copilot-sidecar'
+
+# ─── 4. Skip provisioning when existing creds still work ──────────────────
 EXISTING_ID="$(read_env_var COPILOT_OPENEMR_CLIENT_ID)"
-EXISTING_SECRET="$(read_env_var COPILOT_OPENEMR_CLIENT_SECRET)"
+EXISTING_KEY_PATH="$(read_env_var COPILOT_OPENEMR_PRIVATE_KEY_PATH)"
 CLIENT_ID=""
-CLIENT_SECRET=""
 SKIPPED_PROVISION=0
 
-if [ "$FORCE" = "0" ] && [ -n "$EXISTING_ID" ] && [ -n "$EXISTING_SECRET" ]; then
+if [ "$FORCE" = "0" ] \
+   && [ -n "$EXISTING_ID" ] \
+   && [ -n "$EXISTING_KEY_PATH" ] \
+   && [ -f "$EXISTING_KEY_PATH" ]; then
   echo "Trying existing credentials in .env (client_id=${EXISTING_ID:0:12}…) …"
-  if verify_credentials "$EXISTING_ID" "$EXISTING_SECRET" 2>/dev/null; then
+  if verify_credentials "$EXISTING_ID" "$EXISTING_KEY_PATH" 2>/dev/null; then
     echo "✓ Existing credentials are still valid; skipping registration."
     CLIENT_ID="$EXISTING_ID"
-    CLIENT_SECRET="$EXISTING_SECRET"
     SKIPPED_PROVISION=1
   else
     echo "  Existing credentials no longer work; reprovisioning."
   fi
 fi
 
-# ─── 4. Provision (or rotate) via the Symfony command ─────────────────────
+# ─── 5. Provision (or rotate) via the Symfony command ─────────────────────
 if [ -z "$CLIENT_ID" ]; then
   echo "Provisioning Clinical Co-Pilot API client in OpenEMR …"
+
+  # The container can read host-mounted paths; clinical-copilot/ is
+  # mounted at /var/www/localhost/htdocs/openemr/clinical-copilot via
+  # the development-easy compose. Translate the host JWKS path to its
+  # in-container equivalent before passing it to the Symfony command.
+  CONTAINER_JWKS_PATH="$OPENEMR_ROOT/clinical-copilot/.keys/openemr-jwt-bearer.jwks.json"
+  if ! docker exec "$CONTAINER" test -f "$CONTAINER_JWKS_PATH"; then
+    echo "ERROR: $CONTAINER_JWKS_PATH not visible inside the OpenEMR container." >&2
+    echo "       The development-easy compose mounts the openemr/ checkout" >&2
+    echo "       at $OPENEMR_ROOT, so .keys/ should be visible there. Check" >&2
+    echo "       the docker volume mappings if this fails." >&2
+    exit 2
+  fi
+
   set +e
   PROV_OUTPUT="$(docker exec -u root -w "$OPENEMR_ROOT" "$CONTAINER" \
     php bin/console clinical-copilot:provision-api-client \
       --site="$SITE" \
+      --jwks-json="@${CONTAINER_JWKS_PATH}" \
       2>/tmp/copilot-prov.err)"
   PROV_RC=$?
   set -e
@@ -277,33 +306,36 @@ if [ -z "$CLIENT_ID" ]; then
     exit 2
   fi
 
-  # Parse with python3 because it is the only JSON parser guaranteed
-  # to be present (the sidecar runs on Python).
   CLIENT_ID="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')"
-  CLIENT_SECRET="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_secret"])')"
   ROTATED="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("rotated") else "no")')"
   PREV_COUNT="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("previous_count", 0))')"
+  KEY_COUNT="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("jwks_key_count", 0))')"
 
-  if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
-    echo "ERROR: parsed empty client_id or client_secret from JSON payload." >&2
+  if [ -z "$CLIENT_ID" ]; then
+    echo "ERROR: parsed empty client_id from JSON payload." >&2
     echo "JSON: $JSON_LINE" >&2
     exit 2
   fi
-  echo "✓ Provisioned (rotated=$ROTATED, removed $PREV_COUNT stale row(s))."
+  echo "✓ Provisioned (rotated=$ROTATED, removed $PREV_COUNT stale row(s), JWKS keys registered=$KEY_COUNT)."
 
-  # ─── 5. Persist to .env ─────────────────────────────────────────────────
-  write_env_var COPILOT_OPENEMR_CLIENT_ID     "$CLIENT_ID"
-  write_env_var COPILOT_OPENEMR_CLIENT_SECRET "$CLIENT_SECRET"
+  # ─── 6. Persist to .env ─────────────────────────────────────────────────
+  write_env_var COPILOT_OPENEMR_CLIENT_ID         "$CLIENT_ID"
+  write_env_var COPILOT_OPENEMR_PRIVATE_KEY_PATH  "$PRIVATE_KEY_PATH"
+  # Wipe the legacy CLIENT_SECRET so an old value cannot mislead an
+  # operator who checks the file. The sidecar does not use it.
+  write_env_var COPILOT_OPENEMR_CLIENT_SECRET     ""
   chmod 600 "$ENV_FILE" || true
-  echo "✓ Wrote COPILOT_OPENEMR_CLIENT_ID and COPILOT_OPENEMR_CLIENT_SECRET to .env (mode 0600)."
+  echo "✓ Wrote COPILOT_OPENEMR_CLIENT_ID and COPILOT_OPENEMR_PRIVATE_KEY_PATH to .env (mode 0600)."
 
-  # ─── 6. Verify the new credentials end-to-end ──────────────────────────
-  echo "Verifying new credentials via $(host_oauth_base)/token …"
-  if ! verify_credentials "$CLIENT_ID" "$CLIENT_SECRET"; then
+  # ─── 7. Verify the new credentials end-to-end ──────────────────────────
+  echo "Verifying with a real jwt-bearer assertion against $(host_oauth_base)/token …"
+  if ! verify_credentials "$CLIENT_ID" "$PRIVATE_KEY_PATH"; then
     echo "ERROR: newly provisioned credentials failed verification." >&2
-    echo "       The most common cause is OpenEMR's mariadb container not yet" >&2
-    echo "       being healthy after a fresh \`docker compose up\`. Wait 30 s" >&2
-    echo "       and re-run this script." >&2
+    echo "       Most common causes:" >&2
+    echo "         * OpenEMR mariadb not yet healthy (wait 30 s, retry)" >&2
+    echo "         * OpenEMR's JWTClientAuthenticationService rejected the" >&2
+    echo "           assertion: check the OpenEMR error log for hints" >&2
+    echo "           (docker exec $CONTAINER tail -50 /var/log/apache2/error.log)" >&2
     exit 3
   fi
   echo "✓ Verified: OpenEMR issued an access token for the new client."

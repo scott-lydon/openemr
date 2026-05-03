@@ -24,6 +24,11 @@ dependencies = [
     "PyYAML>=6.0.2",
     "tenacity>=9.0.0",
     "python-multipart>=0.0.12",
+    # PyJWT[crypto] gives us RS256 signing for the SMART Backend Services
+    # client_credentials grant (RFC 7523 jwt-bearer assertion). OpenEMR's
+    # CustomClientCredentialsGrant only accepts JWT-bearer; HTTP Basic is
+    # rejected with "assertion type is not supported".
+    "PyJWT[crypto]>=2.8.0",
 ]
 
 [project.optional-dependencies]
