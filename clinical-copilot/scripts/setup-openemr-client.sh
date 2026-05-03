@@ -207,6 +207,95 @@ verify_credentials() {
     $insecure_flag
 }
 
+# ─── Helper: surface OpenEMR's actual rejection reason on failure ─────────
+# The /token endpoint returns a generic invalid_client even when the real
+# cause is a specific constraint violation (signature mismatch, audience
+# mismatch, JWKS lookup failure, JTI replay, etc.). The detail lives in
+# OpenEMR's PHP error log. Tail the last few hundred lines, grep for
+# anything that mentions our client_id, JWT, or assertion, and print
+# that plus the JWKS we registered, the JWT header we just sent, and
+# the resolved audience so the operator can compare them side by side.
+dump_openemr_diagnostics() {
+  local container="$1" id="$2" key_path="$3" jwks_path="$4"
+  local audience
+  audience="$(host_oauth_base)/token"
+
+  echo "─── DIAGNOSTICS ──────────────────────────────────────────────" >&2
+
+  echo "JWT we sent (header + payload, decoded):" >&2
+  "$PY" - "$id" "$key_path" "$audience" <<'PYEOF' >&2 2>&1 || true
+import sys, json, base64, time, secrets
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+client_id, key_path, aud = sys.argv[1], sys.argv[2], sys.argv[3]
+pem = open(key_path, 'rb').read()
+key = load_pem_private_key(pem, password=None)
+now = int(time.time())
+header = {"alg": "RS384", "typ": "JWT", "kid": "clinical-copilot-sidecar"}
+payload = {
+    "iss": client_id, "sub": client_id, "aud": aud,
+    "exp": now + 240, "iat": now, "jti": secrets.token_urlsafe(16),
+}
+def b64(d):
+    return base64.urlsafe_b64encode(d).rstrip(b'=').decode('ascii')
+h = b64(json.dumps(header, separators=(',',':')).encode())
+p = b64(json.dumps(payload, separators=(',',':')).encode())
+print('  header :', json.dumps(header, indent=2).replace('\n', '\n           '))
+print('  payload:', json.dumps(payload, indent=2).replace('\n', '\n           '))
+
+# Public key thumbprint so we can cross-check against the registered JWKS.
+pub_pem = key.public_key().public_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PublicFormat.SubjectPublicKeyInfo,
+)
+import hashlib
+print('  pubkey SHA-256 fp (host):', hashlib.sha256(pub_pem).hexdigest()[:32], '…')
+PYEOF
+
+  echo "" >&2
+  echo "JWKS registered with OpenEMR (oauth_clients.jwks for this client):" >&2
+  docker exec "$container" mariadb \
+    -h mysql -u openemr -popenemr -D openemr -N -B \
+    -e "SELECT jwks FROM oauth_clients WHERE client_id = '$id';" 2>/dev/null \
+    | "$PY" -c 'import sys, json
+raw = sys.stdin.read().strip()
+if not raw:
+    print("  (empty result — client_id not found in oauth_clients)")
+else:
+    try:
+        data = json.loads(raw)
+        for k in data.get("keys", []):
+            print(f"  kid={k.get(\"kid\")} alg={k.get(\"alg\")} use={k.get(\"use\")} kty={k.get(\"kty\")}")
+        print("  full:", json.dumps(data, indent=2).replace("\n", "\n         "))
+    except Exception as e:
+        print(f"  parse error: {e}; raw repr: {raw[:200]!r}")
+' 2>&1 || echo "  (could not query oauth_clients)" >&2
+
+  echo "" >&2
+  echo "What OpenEMR thinks ITS token URL is (compare with our aud above):" >&2
+  docker exec "$container" mariadb \
+    -h mysql -u openemr -popenemr -D openemr -N -B \
+    -e "SELECT gl_value FROM globals WHERE gl_name IN ('site_addr_oath','rest_api_path','fhir_address') ORDER BY gl_name;" \
+    2>/dev/null | sed 's/^/  /' >&2 || echo "  (could not query globals)" >&2
+  echo "  Audience we used        : $audience" >&2
+
+  echo "" >&2
+  echo "OpenEMR PHP error log (last ~80 lines, filtered for JWT/assertion/oauth):" >&2
+  docker exec "$container" sh -c '
+    for f in /var/log/apache2/error.log /var/log/apache2/error_log /var/log/php_errors.log; do
+      if [ -f "$f" ]; then echo "── $f ──"; tail -200 "$f"; fi
+    done
+  ' 2>/dev/null \
+    | grep -iE 'jwt|assertion|client_id|oauth|jwks|signature|audience|invalid_client|constraint|RsaSha' \
+    | tail -80 \
+    | sed 's/^/  /' >&2 \
+    || echo "  (no matching log lines)" >&2
+
+  echo "──────────────────────────────────────────────────────────────" >&2
+}
+
 # ─── 0. Bootstrap .env ────────────────────────────────────────────────────
 if [ ! -f "$ENV_FILE" ]; then
   if [ ! -f "$ENV_EXAMPLE" ]; then
@@ -371,11 +460,8 @@ if [ -z "$CLIENT_ID" ]; then
   echo "Verifying with a real jwt-bearer assertion against $(host_oauth_base)/token …"
   if ! verify_credentials "$CLIENT_ID" "$PRIVATE_KEY_PATH"; then
     echo "ERROR: newly provisioned credentials failed verification." >&2
-    echo "       Most common causes:" >&2
-    echo "         * OpenEMR mariadb not yet healthy (wait 30 s, retry)" >&2
-    echo "         * OpenEMR's JWTClientAuthenticationService rejected the" >&2
-    echo "           assertion: check the OpenEMR error log for hints" >&2
-    echo "           (docker exec $CONTAINER tail -50 /var/log/apache2/error.log)" >&2
+    echo "" >&2
+    dump_openemr_diagnostics "$CONTAINER" "$CLIENT_ID" "$PRIVATE_KEY_PATH" "$JWKS_PATH"
     exit 3
   fi
   echo "✓ Verified: OpenEMR issued an access token for the new client."
