@@ -16,6 +16,7 @@ Runs **before** any LLM call. Addresses AUDIT.md §4 directly:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime, timezone
 from typing import Any
@@ -341,6 +342,71 @@ def _reconcile_medications(meds: list[Medication]) -> tuple[list[Medication], li
     return out, flags
 
 
+def _presenting_from_encounters(
+    bundle: Mapping[str, Any] | None,
+) -> Presenting | None:
+    """Extract presenting symptoms from the most recent Encounter.
+
+    Per ARCHITECTURE.md §2.4 "Symptom-source note", presenting
+    complaints in OpenEMR live in ``form_encounter.reason``, which
+    surfaces over Fast Healthcare Interoperability Resources (FHIR)
+    as ``Encounter.reasonCode[].text``. Without this extraction the
+    snapshot's ``presenting`` field is always empty in production
+    (FHIR-backed) mode, even though the chief-complaint string is
+    sitting right there on the latest visit row.
+
+    Strategy:
+
+    - Pick the most recent Encounter by ``period.start`` (falling back
+      to ``period.end`` then to bundle order).
+    - Pull symptoms from ``reasonCode[].text`` first; fall back to
+      ``reasonCode[].coding[].display`` if text is absent.
+    - Split each value on commas and ``;`` because charts often pack
+      multiple complaints into one cell ("right toe pain, swollen toe,
+      body aches"). Trim whitespace; drop empties.
+
+    Returns ``None`` when no encounter has any reasonCode content, so
+    the caller can keep the existing default-empty Presenting.
+    """
+    encounters = list(_bundle_entries(bundle))
+    if not encounters:
+        return None
+
+    def _start(enc: Mapping[str, Any]) -> str:
+        period = enc.get("period") or {}
+        return str(period.get("start") or period.get("end") or "")
+
+    encounters.sort(key=_start, reverse=True)
+
+    for enc in encounters:
+        reason_codes = enc.get("reasonCode") or []
+        if not isinstance(reason_codes, list):
+            continue
+        symptoms: list[str] = []
+        for rc in reason_codes:
+            if not isinstance(rc, Mapping):
+                continue
+            raw = rc.get("text") or ""
+            if not raw:
+                for coding in rc.get("coding") or []:
+                    if isinstance(coding, Mapping):
+                        raw = coding.get("display") or ""
+                        if raw:
+                            break
+            if not raw:
+                continue
+            for piece in re.split(r"[,;]", str(raw)):
+                trimmed = piece.strip().strip(".")
+                if trimmed:
+                    symptoms.append(trimmed)
+        if symptoms:
+            return Presenting(
+                symptoms=symptoms,
+                source="Encounter.reasonCode",
+            )
+    return None
+
+
 def reconcile(
     *,
     patient_uuid: str,
@@ -380,6 +446,11 @@ def reconcile(
     labs = [lb for lb in (
         _lab_from_observation(r) for r in _bundle_entries(fhir_bundles.get("labs"))
     ) if lb is not None]
+
+    # Caller-supplied presenting wins (the BFF can pass in pre-visit
+    # form data). Otherwise derive from the latest encounter.
+    if presenting is None:
+        presenting = _presenting_from_encounters(fhir_bundles.get("encounters"))
 
     return PatientSnapshot(
         patient_id=patient_uuid,

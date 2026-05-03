@@ -209,6 +209,97 @@ WHERE v.`pid` = 87413
     WHERE f.`form_id` = v.`id` AND f.`formdir` = 'vitals'
   );
 
+-- ----------------------------------------------------------------------------
+-- 7. Encounter.reasonCode — explicit comma-separated presenting symptoms.
+--    The sidecar reconciler reads this column via FHIR
+--    Encounter.reasonCode[].text and splits on ',' / ';' to populate
+--    the "Presenting" panel. The seed originally packed all of Barbara's
+--    chief complaint into one phrase ("Acute right toe pain x3 days"),
+--    which surfaced as a single bullet; expanding it here lets each
+--    symptom show up individually and lets the LLM pair them against
+--    candidate diagnoses one-by-one (matching the JSON fixture's
+--    presenting.symptoms list verbatim).
+--    UPDATE (not INSERT) so re-running the seed overwrites whatever
+--    text the prior version wrote.
+-- ----------------------------------------------------------------------------
+UPDATE `form_encounter`
+   SET `reason` = 'right toe pain, swollen toe, body aches; 3 days'
+ WHERE `pid` = 87413 AND `encounter` = 87413001;
+UPDATE `form_encounter`
+   SET `reason` = 'congestion, facial pressure, post-nasal drip; 5 days'
+ WHERE `pid` = 87415 AND `encounter` = 87415001;
+
+-- ----------------------------------------------------------------------------
+-- 8. Lab results — Barbara: HbA1c + C-reactive protein, Suzie: TSH.
+--    OpenEMR's FHIR Observation?category=laboratory query joins four
+--    tables: procedure_order (the order row), procedure_order_code
+--    (the LOINC + name on the order line), procedure_report (the result
+--    document), and procedure_result (the individual result values).
+--    Each lab needs one row in each table, all chained by
+--    procedure_order_id / procedure_report_id, so that
+--    ObservationLabService.search() (src/Services/ObservationLabService.php)
+--    can materialise them as FHIR Observations.
+-- ----------------------------------------------------------------------------
+
+-- 8a. procedure_order — one order row per lab.
+INSERT IGNORE INTO `procedure_order`
+  (`procedure_order_id`, `provider_id`, `patient_id`, `encounter_id`,
+   `date_collected`, `date_ordered`, `order_priority`, `order_status`,
+   `lab_id`, `specimen_type`, `procedure_order_type`, `activity`)
+VALUES
+  -- Barbara: HbA1c order
+  (87413010, 1, 87413, 87413001,
+   '2026-03-10 08:30:00', '2026-03-09', 'normal', 'complete',
+   0, 'blood', 'laboratory_test', 1),
+  -- Barbara: CRP order
+  (87413011, 1, 87413, 87413001,
+   '2026-04-27 08:30:00', '2026-04-26', 'normal', 'complete',
+   0, 'blood', 'laboratory_test', 1),
+  -- Suzie: TSH order
+  (87414010, 1, 87414, 87414001,
+   '2026-02-22 08:15:00', '2026-02-21', 'normal', 'complete',
+   0, 'blood', 'laboratory_test', 1);
+
+-- 8b. procedure_order_code — the LOINC code + procedure name on each order line.
+INSERT IGNORE INTO `procedure_order_code`
+  (`procedure_order_id`, `procedure_code`, `procedure_name`,
+   `procedure_order_seq`, `procedure_type`, `procedure_source`,
+   `do_not_send`)
+VALUES
+  (87413010, '4548-4', 'Hemoglobin A1c',         1, 'ord', '1', 0),
+  (87413011, '1988-5', 'C-reactive protein',     1, 'ord', '1', 0),
+  (87414010, '3016-3', 'Thyroid stimulating hormone', 1, 'ord', '1', 0);
+
+-- 8c. procedure_report — one report per order.
+INSERT IGNORE INTO `procedure_report`
+  (`procedure_report_id`, `procedure_order_id`, `procedure_order_seq`,
+   `date_collected`, `date_report`, `source`, `report_status`)
+VALUES
+  (87413010, 87413010, 1, '2026-03-10 08:30:00', '2026-03-10 12:00:00', 1, 'final'),
+  (87413011, 87413011, 1, '2026-04-27 08:30:00', '2026-04-27 13:00:00', 1, 'final'),
+  (87414010, 87414010, 1, '2026-02-22 08:15:00', '2026-02-22 11:00:00', 1, 'final');
+
+-- 8d. procedure_result — the individual values FHIR exposes as Observations.
+--     `abnormal` flags map to FHIR Observation.interpretation; 'high' for
+--     both A1c and CRP because they exceed the upper reference bound.
+INSERT IGNORE INTO `procedure_result`
+  (`uuid`, `procedure_report_id`, `result_data_type`, `result_code`,
+   `result_text`, `result`, `range`, `units`, `result_status`,
+   `abnormal`, `comments`, `date`)
+VALUES
+  -- Barbara A1c 7.2% (ref 4.0-5.7)
+  (UNHEX(REPLACE('87413l01-0000-4000-8000-000000000001', '-', '')),
+   87413010, 'N', '4548-4', 'Hemoglobin A1c', '7.2', '4.0-5.7', '%',
+   'final', 'high', '', '2026-03-10 12:00:00'),
+  -- Barbara CRP 42 mg/L (ref 0-5)
+  (UNHEX(REPLACE('87413l02-0000-4000-8000-000000000001', '-', '')),
+   87413011, 'N', '1988-5', 'C-reactive protein', '42.0', '0-5', 'mg/L',
+   'final', 'high', '', '2026-04-27 13:00:00'),
+  -- Suzie TSH 2.4 mIU/L (ref 0.4-4.0)
+  (UNHEX(REPLACE('87414l01-0000-4000-8000-000000000001', '-', '')),
+   87414010, 'N', '3016-3', 'Thyroid stimulating hormone', '2.4', '0.4-4.0', 'mIU/L',
+   'final', 'normal', '', '2026-02-22 11:00:00');
+
 COMMIT;
 
 -- ============================================================================
