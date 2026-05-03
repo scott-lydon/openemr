@@ -13,13 +13,28 @@ Token shape (HS256):
         "iss": "clinical-copilot-bff" | "openemr-launch",
         "sub": <user_id>,                # OpenEMR username
         "patient_id": "Patient/<uuid>",  # FHIR resource id
-        "purpose_of_use": "diagnostic_cross_check" | "chart_error_scan" | ...,
+        "purpose_of_use": ["diagnostic_cross_check", "chart_error_scan",
+                           "follow_up_question"],   # JSON array
         "scope": "<space-separated SMART scopes>",
         "iat": <unix>,
         "nbf": <unix>,
         "exp": <unix>,                   # 5 minutes after iat
         "jti": <random>,
     }
+
+The ``purpose_of_use`` claim is a JSON array of every purpose the holder
+is authorised to invoke during the token's lifetime. The UI fans out
+multiple ``/chat`` calls (one per purpose) from a single launch click;
+binding the token to only one purpose would force the UI to round-trip
+to the launch endpoint per purpose. The audit log still records the
+per-call purpose, so authorisation breadth and exercised purpose remain
+distinguishable.
+
+Backward-compatible: a token whose ``purpose_of_use`` is a plain string
+(legacy minter) is treated as a single-element list. New tokens always
+emit an array. This forward-compat path lets in-flight tokens (the
+5-minute lifetime) survive a deploy that updates the minter and the
+verifier together.
 
 Verification failures throw ``TaskTokenError`` subclasses (each one names a
 single, unambiguous failure mode) so callers can return precise 401 reasons
@@ -34,6 +49,7 @@ import hmac
 import json
 import secrets
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -92,14 +108,24 @@ def _b64url_decode(data: str) -> bytes:
 
 @dataclass(frozen=True)
 class TaskTokenClaims:
-    """Verified, downscoped task-token claims."""
+    """Verified, downscoped task-token claims.
+
+    ``authorized_purposes`` is the JSON array decoded from the
+    ``purpose_of_use`` claim — every purpose the holder may invoke
+    during the token's lifetime. Always non-empty; verifier rejects
+    tokens with an empty array.
+    """
 
     user_id: str
     patient_id: str
-    purpose_of_use: str
+    authorized_purposes: tuple[str, ...]
     scope: str
     issuer: str
     expires_at: int
+
+    def is_purpose_authorized(self, purpose: str) -> bool:
+        """Return True if ``purpose`` is in the authorised set."""
+        return purpose in self.authorized_purposes
 
 
 def mint_task_token(
@@ -107,12 +133,29 @@ def mint_task_token(
     signing_key: str,
     user_id: str,
     patient_id: str,
-    purpose_of_use: str,
+    purposes_of_use: Sequence[str],
     scopes: list[str],
     lifetime_seconds: int = 300,
     issuer: str = "clinical-copilot-bff",
 ) -> str:
     """Mint an HS256 JWT representing one downscoped task.
+
+    ``purposes_of_use`` is the list of purpose codes the holder may
+    invoke during the token's lifetime (e.g.
+    ``("diagnostic_cross_check", "chart_error_scan")``). Each ``/chat``
+    call still passes a single purpose; the sidecar verifies membership.
+    Audit rows record the per-call purpose, so the breadth of
+    authorisation and the actually-exercised purpose remain
+    distinguishable.
+
+    Constraints:
+
+    - ``purposes_of_use`` must be non-empty; minting a token with no
+      authorised purposes would render it unusable for ``/chat`` calls,
+      which is always an upstream bug.
+    - Each entry must be a non-empty string. Mixed types or empty
+      strings are rejected upfront so the failure surfaces at mint time
+      rather than at verify time.
 
     The sidecar verifies this token with the same signing key. Real
     deployments swap to RS256 with rotating keys; HS256 with a 32-byte
@@ -124,13 +167,30 @@ def mint_task_token(
             "refusing to mint token with default signing key; "
             "set COPILOT_BFF_JWT_SIGNING_KEY to a 32-byte random secret"
         )
+    purposes_list = list(purposes_of_use)
+    if not purposes_list:
+        raise ValueError(
+            "purposes_of_use must contain at least one purpose code; "
+            "minting a token with zero authorised purposes is always a bug"
+        )
+    for index, purpose in enumerate(purposes_list):
+        if not isinstance(purpose, str):
+            raise ValueError(
+                f"purposes_of_use[{index}] must be a string, got "
+                f"{type(purpose).__name__}: {purpose!r}"
+            )
+        if not purpose:
+            raise ValueError(
+                f"purposes_of_use[{index}] is empty; "
+                "every entry must be a non-empty purpose code"
+            )
     header = {"alg": "HS256", "typ": "JWT"}
     now = int(time.time())
     payload: dict[str, Any] = {
         "iss": issuer,
         "sub": user_id,
         "patient_id": patient_id,
-        "purpose_of_use": purpose_of_use,
+        "purpose_of_use": purposes_list,
         "scope": " ".join(scopes),
         "iat": now,
         "nbf": now,
@@ -187,10 +247,34 @@ def verify_task_token(token: str, *, signing_key: str) -> TaskTokenClaims:
     for required in ("sub", "patient_id", "purpose_of_use"):
         if not payload.get(required):
             raise TaskTokenMissingClaimError(f"missing required claim: {required!r}")
+    raw_purpose: Any = payload["purpose_of_use"]
+    if isinstance(raw_purpose, str):
+        # Backward-compatible: legacy minter emitted a single string.
+        # Treat as a one-element list so in-flight tokens survive a
+        # deploy that rolls the minter and verifier together.
+        authorized_purposes: tuple[str, ...] = (raw_purpose,)
+    elif isinstance(raw_purpose, list):
+        if not raw_purpose:
+            raise TaskTokenMissingClaimError(
+                "purpose_of_use claim is an empty array; "
+                "a token with no authorised purposes cannot be used"
+            )
+        for index, value in enumerate(raw_purpose):
+            if not isinstance(value, str) or not value:
+                raise TaskTokenMissingClaimError(
+                    f"purpose_of_use[{index}] is not a non-empty string: "
+                    f"{value!r}"
+                )
+        authorized_purposes = tuple(raw_purpose)
+    else:
+        raise TaskTokenMissingClaimError(
+            f"purpose_of_use must be a string or array of strings, got "
+            f"{type(raw_purpose).__name__}"
+        )
     return TaskTokenClaims(
         user_id=str(payload["sub"]),
         patient_id=str(payload["patient_id"]),
-        purpose_of_use=str(payload["purpose_of_use"]),
+        authorized_purposes=authorized_purposes,
         scope=str(payload.get("scope", "")),
         issuer=str(payload.get("iss", "")),
         expires_at=exp,

@@ -179,19 +179,27 @@ async def chat(
 
     Requires a BFF-minted task token in the ``Authorization`` header.
     The token's ``patient_id`` claim must equal ``body.patient_id``;
-    that constraint is enforced by :func:`_snapshot_for`. The token's
-    ``purpose_of_use`` claim must equal ``body.purpose``.
+    that constraint is enforced by :func:`_snapshot_for`. ``body.purpose``
+    must be a member of the token's ``authorized_purposes`` set
+    (the JSON array stored in the ``purpose_of_use`` claim) — the UI
+    fans out one ``/chat`` call per purpose, and the launch endpoint
+    binds the token to every purpose the UI will exercise.
+
+    The audit log still records the per-call ``body.purpose``, so the
+    breadth of authorisation and the actually-exercised purpose remain
+    distinguishable downstream.
 
     ``?mock=1`` forces the deterministic mock provider, but is rejected
     unless ``COPILOT_ALLOW_MOCK=true``.
     """
-    if claims.purpose_of_use != body.purpose:
+    if not claims.is_purpose_authorized(body.purpose):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
-                "error": "purpose_of_use_mismatch",
+                "error": "purpose_of_use_not_authorized",
                 "message": (
-                    f"task token authorises purpose={claims.purpose_of_use!r}, "
+                    f"task token authorises purposes="
+                    f"{list(claims.authorized_purposes)!r}, "
                     f"request asked for purpose={body.purpose!r}"
                 ),
             },

@@ -41,12 +41,27 @@ use OpenEMR\ClinicalCoPilot\TaskTokenMinter;
 
 $logger = new SystemLogger();
 
-// 1. Authentication is enforced by globals.php; if we get here the user
-//    is logged in. AuthUtils stashes the username on $_SESSION.
-$userId = (string) ($_SESSION['authUser'] ?? '');
-if ($userId === '') {
+// 1. Authentication. OpenEMR's globals.php bootstraps the session and
+//    stores the authenticated user id under 'authUserID' on the
+//    Symfony session bag. We read it via the SessionWrapperFactory
+//    (the canonical pattern across the codebase) and resolve the
+//    username from the users table to embed it in the JWT subject.
+$session = SessionWrapperFactory::getInstance()->getActiveSession();
+$authUserID = $session->get('authUserID');
+if (!$authUserID) {
     http_response_code(401);
     echo xlt('Not authenticated.');
+    exit;
+}
+$userRow = sqlQuery('SELECT username FROM users WHERE id = ?', [(int) $authUserID]);
+$userId = (string) ($userRow['username'] ?? '');
+if ($userId === '') {
+    $logger->error(
+        'clinical_copilot.launch.user_lookup_failed',
+        ['authUserID' => $authUserID]
+    );
+    http_response_code(500);
+    echo xlt('Could not resolve username for authenticated user.');
     exit;
 }
 
@@ -72,7 +87,7 @@ if ($pid <= 0) {
     exit;
 }
 
-if (!CsrfUtils::verifyCsrfToken($csrfToken, SessionWrapperFactory::getInstance()->getActiveSession())) {
+if (!CsrfUtils::verifyCsrfToken($csrfToken, $session)) {
     $logger->warning(
         'clinical_copilot.launch.csrf_failed',
         ['pid' => $pid, 'user_id' => $userId]
@@ -82,6 +97,12 @@ if (!CsrfUtils::verifyCsrfToken($csrfToken, SessionWrapperFactory::getInstance()
     exit;
 }
 
+// The UI fans out one /chat call per purpose from a single launch
+// click — diagnostic cross-check, chart-error scan, and follow-up
+// questions all run from the same page. Bind the token to the full
+// authorised set so a single launch covers every panel; the sidecar
+// enforces membership per call and the audit log records the
+// per-call exercised purpose.
 $allowedPurposes = [
     'diagnostic_cross_check',
     'chart_error_scan',
@@ -92,6 +113,10 @@ if (!in_array($purpose, $allowedPurposes, true)) {
     echo xlt('Unknown purpose:') . ' ' . text($purpose);
     exit;
 }
+// The ?purpose= query parameter is preserved in the URL fragment so
+// the chat UI can highlight the originally-requested panel, but the
+// minted token authorises EVERY purpose in $allowedPurposes.
+$authorizedPurposes = $allowedPurposes;
 
 // 4. Resolve the FHIR Patient resource id. We prefer the UUID; we never
 //    leak the legacy numeric pid into the sidecar URL because the sidecar
@@ -129,7 +154,7 @@ try {
     $token = $minter->mint(
         userId: $userId,
         patientId: $patientId,
-        purposeOfUse: $purpose,
+        purposesOfUse: $authorizedPurposes,
     );
 } catch (\Throwable $exc) {
     $logger->error('clinical_copilot.launch.mint_failed', ['error' => $exc->getMessage()]);
@@ -140,7 +165,12 @@ try {
 
 $logger->info(
     'clinical_copilot.launch.ok',
-    ['user_id' => $userId, 'pid' => $pid, 'purpose' => $purpose]
+    [
+        'user_id' => $userId,
+        'pid' => $pid,
+        'requested_purpose' => $purpose,
+        'authorized_purposes' => $authorizedPurposes,
+    ]
 );
 
 // 6. Redirect with token + patient + purpose in the URL fragment. The

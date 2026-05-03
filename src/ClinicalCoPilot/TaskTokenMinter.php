@@ -40,13 +40,22 @@ final class TaskTokenConfigurationError extends \RuntimeException
  *         "iss": "openemr-launch",
  *         "sub": <user_id>,
  *         "patient_id": "Patient/<uuid>",
- *         "purpose_of_use": "diagnostic_cross_check",
+ *         "purpose_of_use": ["diagnostic_cross_check", "chart_error_scan",
+ *                            "follow_up_question"],
  *         "scope": "<space-separated SMART scopes>",
  *         "iat": <unix>,
  *         "nbf": <unix>,
  *         "exp": <unix>,
  *         "jti": <random>,
  *     }
+ *
+ * The ``purpose_of_use`` claim is a JSON array of every purpose the
+ * holder is authorised to invoke during the token's 5-minute lifetime.
+ * The chat UI fans out one ``/chat`` call per purpose from a single
+ * launch click; binding the token to one purpose would force the UI
+ * to round-trip back to launch.php per purpose. The audit log still
+ * records the per-call purpose (cfg.purpose), so authorisation breadth
+ * and exercised purpose remain distinguishable downstream.
  */
 final class TaskTokenMinter
 {
@@ -86,16 +95,23 @@ final class TaskTokenMinter
     /**
      * Mint a 5-minute task token.
      *
-     * @param string        $userId       OpenEMR username (or any stable id).
-     * @param string        $patientId    "Patient/<uuid>" — use a FHIR resource id.
-     * @param string        $purposeOfUse e.g. "diagnostic_cross_check".
-     * @param list<string>  $scopes       SMART-on-FHIR scopes; defaults sane.
-     * @param int           $lifetime     Lifetime in seconds; default 300.
+     * @param string        $userId          OpenEMR username (or any stable id).
+     * @param string        $patientId       "Patient/<uuid>" — use a FHIR resource id.
+     * @param list<string>  $purposesOfUse   Every purpose the holder may invoke during
+     *                                       the token's lifetime, e.g.
+     *                                       ["diagnostic_cross_check", "chart_error_scan"].
+     *                                       Must contain at least one entry; each entry
+     *                                       must be a non-empty string. The sidecar
+     *                                       enforces membership (not equality) per
+     *                                       /chat call, and the audit log records the
+     *                                       per-call purpose separately.
+     * @param list<string>  $scopes          SMART-on-FHIR scopes; defaults sane.
+     * @param int           $lifetime        Lifetime in seconds; default 300.
      */
     public function mint(
         string $userId,
         string $patientId,
-        string $purposeOfUse,
+        array $purposesOfUse,
         array $scopes = self::DEFAULT_SCOPES,
         int $lifetime = self::DEFAULT_LIFETIME_SECONDS,
     ): string {
@@ -108,8 +124,33 @@ final class TaskTokenMinter
                 . var_export($patientId, true)
             );
         }
-        if ($purposeOfUse === '') {
-            throw new \InvalidArgumentException('purposeOfUse must be non-empty');
+        if ($purposesOfUse === []) {
+            throw new \InvalidArgumentException(
+                'purposesOfUse must contain at least one purpose code; '
+                . 'a token with no authorised purposes would be unusable'
+            );
+        }
+        // Re-pack as a numerically-indexed list so json_encode never
+        // emits a JSON object for a sparse or string-keyed input array.
+        // The Python verifier rejects non-list payloads.
+        $purposesList = [];
+        foreach ($purposesOfUse as $index => $purpose) {
+            if (!is_string($purpose)) {
+                throw new \InvalidArgumentException(sprintf(
+                    'purposesOfUse[%s] must be a string, got %s: %s',
+                    var_export($index, true),
+                    get_debug_type($purpose),
+                    var_export($purpose, true),
+                ));
+            }
+            if ($purpose === '') {
+                throw new \InvalidArgumentException(sprintf(
+                    'purposesOfUse[%s] is empty; every entry must be a '
+                    . 'non-empty purpose code',
+                    var_export($index, true),
+                ));
+            }
+            $purposesList[] = $purpose;
         }
         if ($lifetime <= 0 || $lifetime > 3600) {
             throw new \InvalidArgumentException(
@@ -122,7 +163,7 @@ final class TaskTokenMinter
             'iss' => 'openemr-launch',
             'sub' => $userId,
             'patient_id' => $patientId,
-            'purpose_of_use' => $purposeOfUse,
+            'purpose_of_use' => $purposesList,
             'scope' => implode(' ', $scopes),
             'iat' => $now,
             'nbf' => $now,

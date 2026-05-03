@@ -142,11 +142,16 @@ def create_app() -> FastAPI:
             "patient/Observation.r",
             "patient/Encounter.r",
         ]
+        # The /chat endpoint of the BFF is a single-purpose proxy: every
+        # incoming request names exactly one purpose, so the minted token
+        # only needs to authorise that one purpose. The OpenEMR launch
+        # flow (interface/clinical_copilot/launch.php) is the path that
+        # mints with multiple purposes for the UI's per-purpose fan-out.
         task_token = mint_task_token(
             signing_key=settings.bff_jwt_signing_key,
             user_id=user_id,
             patient_id=patient_id,
-            purpose_of_use=purpose,
+            purposes_of_use=[purpose],
             scopes=scopes,
             lifetime_seconds=settings.task_token_lifetime_seconds,
         )
@@ -191,7 +196,9 @@ def create_app() -> FastAPI:
             "claims": {
                 "sub": claims.user_id,
                 "patient_id": claims.patient_id,
-                "purpose_of_use": claims.purpose_of_use,
+                # JSON array, one entry per authorised purpose. Always
+                # contains at least one element (verifier rejects empty).
+                "purpose_of_use": list(claims.authorized_purposes),
                 "scope": claims.scope,
                 "iss": claims.issuer,
                 "exp": claims.expires_at,
