@@ -73,9 +73,10 @@
     }
   ],
   "presenting": {
-    "symptoms": ["routine annual exam"],
+    "symptoms": [],
     "since": "1 year",
-    "source": "scheduled visit"
+    "source": "scheduled visit",
+    "visit_reason": "routine annual exam"
   },
   "free_text_notes_index": "vector://patient-87414"
 }

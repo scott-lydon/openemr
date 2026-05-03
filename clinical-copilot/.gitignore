@@ -1,6 +1,12 @@
 .env
 .venv/
 venv/
+# RSA keypair for the SMART Backend Services jwt-bearer assertion
+# (sidecar/openemr_oauth.py). Created by scripts/setup-openemr-client.sh.
+.keys/
+# Background sidecar log written when setup-openemr-client.sh restarts
+# the sidecar via nohup.
+.launch.log
 __pycache__/
 *.pyc
 *.pyo

@@ -62,6 +62,69 @@ To run alongside a local OpenEMR docker (`openemr/docker/development-easy/`):
 docker compose -f clinical-copilot/docker-compose.yml up --build
 ```
 
+## Setup against a real OpenEMR (one command, idempotent)
+
+Once the OpenEMR `development-easy` docker stack is up, this script takes
+the sidecar from "broken because nothing is provisioned" to "verified,
+restarted, `/health` green" without any manual click-through:
+
+```bash
+bash scripts/setup-openemr-client.sh
+```
+
+What it does in order: detects the running OpenEMR container, discovers
+the canonical token endpoint via `/.well-known/smart-configuration`,
+generates an RSA-2048 keypair under `.keys/` (gitignored, mode 0600) if
+absent, calls a custom Symfony command to idempotently provision a
+"Clinical Co-Pilot Sidecar" client in `oauth_clients` with the matching
+JSON Web Key Set, writes the canonical OAuth + FHIR base URLs and the
+private-key path into `.env`, mints a real jwt-bearer assertion to
+verify `/token` actually issues an access token, refreshes the editable
+install (clears `__pycache__` + reruns `pip install -e .`), restarts
+the sidecar in the background, polls `/health`, then hits the
+`/diagnostic` endpoint and refuses to declare success unless the
+running git hash matches `git rev-parse HEAD` and the sidecar reports
+`auth_method=private_key_jwt` plus
+`task_token_purpose_check=membership_in_authorized_purposes`.
+
+Flags: `--force` rotates the keypair and re-provisions even if existing
+credentials still verify; `--no-restart` skips the kill-and-relaunch
+step (useful in continuous-integration environments); `--site=<id>` for
+non-default OpenEMR sites; `--help` prints the inline header.
+
+Distinct exit codes per failure category so a wrapper script can
+react: `0` success, `1` environment, `2` provisioning, `3` credential
+verification, `4` sidecar never became healthy, `5` sidecar restarted
+but is running stale code, `64` bad CLI argument, `70` `.env.example`
+missing.
+
+## Troubleshooting: the `/diagnostic` endpoint
+
+When something acts up, two diagnostic moves cover almost every case.
+
+First, re-run `bash scripts/setup-openemr-client.sh`. It is idempotent,
+so a re-run is always safe; it refreshes the editable install and
+verifies the running sidecar matches the source tree before exiting.
+
+Second, open `http://127.0.0.1:8801/diagnostic` in any browser (or
+`curl -s http://127.0.0.1:8801/diagnostic | jq`). The response is one
+JSON document with the running git hash, the absolute filesystem path
+the `openemr_oauth` module was imported from, the auth method actually
+loaded (`private_key_jwt` for the SMART Backend Services flow,
+`http_basic_legacy` for the pre-rewrite confidential-client flow), the
+purpose-check class (`membership_in_authorized_purposes` for
+multi-purpose tokens, `strict_equality_legacy` for the original
+single-purpose check), the private-key file's presence/mode/size, and
+the sanitised effective settings (secrets reported as a boolean, URLs
+and paths in full because they are not secret).
+
+The endpoint exists specifically because `/health` only proves a
+process is listening; it cannot tell apart a fresh process from a
+fresh process running stale code. The setup script consults
+`/diagnostic` automatically and exits with code `5` when the running
+code drifts from the working tree, naming the exact remediation
+sequence so the next run cannot get it wrong.
+
 ## Use cases this sidecar implements
 
 Trace every capability back to `USERS.md`:

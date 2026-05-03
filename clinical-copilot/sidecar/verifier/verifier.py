@@ -101,26 +101,56 @@ class Verifier:
         ARCHITECTURE.md §10 ("How do we present 'data gaps' without
         becoming the next ignored alert? Inline annotation, capped at the
         1 or 2 most clinically actionable gaps per response.").
+
+        Each gap message is built from the patient's actual snapshot so
+        the gap text is dynamic (it cites the matching active problem
+        label and the actual lab window) rather than a static string.
         """
         gaps: list[str] = []
-        labels = [p.label.lower() for p in snapshot.active_problems]
-        # Gout but no recent uric acid measured → the gout-vs-infection
-        # differentiator from the Stage 0 narrative.
-        if any("gout" in lb for lb in labels):
-            has_ua = any(
-                "urate" in lab.label.lower() or "uric acid" in lab.label.lower()
+
+        def _matching_problem(needles: tuple[str, ...]) -> str | None:
+            for p in snapshot.active_problems:
+                lb = p.label.lower()
+                if any(n in lb for n in needles):
+                    return p.label
+            return None
+
+        def _has_lab(needles: tuple[str, ...]) -> bool:
+            return any(
+                any(n in lab.label.lower() for n in needles)
                 for lab in snapshot.recent_labs
             )
-            if not has_ua:
-                gaps.append(
-                    "no recent uric acid measured — would resolve gout vs infection"
-                )
 
-        # Type 2 diabetes but no HbA1c in the past 12 months.
-        if any("diabetes" in lb for lb in labels):
-            has_hba1c = any("hba1c" in lab.label.lower() for lab in snapshot.recent_labs)
-            if not has_hba1c:
-                gaps.append("no HbA1c measured in the recent labs window")
+        def _lab_window_phrase() -> str:
+            # Cite the most recent observation we *do* have so the doctor
+            # can judge how stale the labs section is. Falls back to a
+            # generic phrase if the patient has zero labs on file.
+            if not snapshot.recent_labs:
+                return "in the recent labs window (no labs on file)"
+            latest = max(
+                (lab.observed_at for lab in snapshot.recent_labs if lab.observed_at),
+                default=None,
+            )
+            if latest is None:
+                return "in the recent labs window"
+            return f"in the labs window through {latest.date().isoformat()}"
+
+        # Gout but no recent uric acid → the gout-vs-infection
+        # differentiator from the Stage 0 narrative.
+        gout_problem = _matching_problem(("gout",))
+        if gout_problem and not _has_lab(("urate", "uric acid")):
+            gaps.append(
+                f"no recent uric acid measured for active problem "
+                f"“{gout_problem}” — would resolve gout vs infection"
+            )
+
+        # Diabetes but no HbA1c in the lab window.
+        dm_problem = _matching_problem(("diabetes",))
+        if dm_problem and not _has_lab(("hba1c", "a1c", "hemoglobin a1c")):
+            gaps.append(
+                f"no HbA1c measured for active problem "
+                f"“{dm_problem}” {_lab_window_phrase()}"
+            )
 
         return gaps[:2]
 

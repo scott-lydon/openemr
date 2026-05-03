@@ -20,12 +20,12 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from sidecar.config import get_settings
 
+from sidecar.auth import mint_task_token, verify_task_token
+
 from .oauth import (
     OpenEMROAuthClient,
     OpenEMRTokenResponse,
     make_pkce_pair,
-    mint_task_token,
-    verify_task_token,
 )
 from .policy import PolicyStore
 
@@ -142,11 +142,16 @@ def create_app() -> FastAPI:
             "patient/Observation.r",
             "patient/Encounter.r",
         ]
+        # The /chat endpoint of the BFF is a single-purpose proxy: every
+        # incoming request names exactly one purpose, so the minted token
+        # only needs to authorise that one purpose. The OpenEMR launch
+        # flow (interface/clinical_copilot/launch.php) is the path that
+        # mints with multiple purposes for the UI's per-purpose fan-out.
         task_token = mint_task_token(
             signing_key=settings.bff_jwt_signing_key,
             user_id=user_id,
             patient_id=patient_id,
-            purpose_of_use=purpose,
+            purposes_of_use=[purpose],
             scopes=scopes,
             lifetime_seconds=settings.task_token_lifetime_seconds,
         )
@@ -183,10 +188,22 @@ def create_app() -> FastAPI:
     @app.post("/internal/verify-token")
     def internal_verify_token(token: str = Body(..., embed=True)) -> dict[str, Any]:
         try:
-            payload = verify_task_token(token, signing_key=settings.bff_jwt_signing_key)
+            claims = verify_task_token(token, signing_key=settings.bff_jwt_signing_key)
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
-        return {"ok": True, "claims": payload}
+        return {
+            "ok": True,
+            "claims": {
+                "sub": claims.user_id,
+                "patient_id": claims.patient_id,
+                # JSON array, one entry per authorised purpose. Always
+                # contains at least one element (verifier rejects empty).
+                "purpose_of_use": list(claims.authorized_purposes),
+                "scope": claims.scope,
+                "iss": claims.issuer,
+                "exp": claims.expires_at,
+            },
+        }
 
     return app
 

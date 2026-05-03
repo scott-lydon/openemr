@@ -15,13 +15,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
-import json
-import os
 import secrets
-import time
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
 
@@ -142,66 +137,13 @@ class OpenEMROAuthClient:
 
 
 # ─── 5-minute task token (BFF-internal HMAC JWT) ───────────────────────────
+# The canonical implementation lives in ``sidecar/auth.py`` so the sidecar
+# can verify what the BFF mints without a circular import. We re-export the
+# BFF-side names here for backwards compatibility with existing call sites.
 
-
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def _b64url_decode(data: str) -> bytes:
-    pad = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + pad)
-
-
-def mint_task_token(
-    *,
-    signing_key: str,
-    user_id: str,
-    patient_id: str,
-    purpose_of_use: str,
-    scopes: list[str],
-    lifetime_seconds: int = 300,
-) -> str:
-    """Mint a JWT (HS256) representing one downscoped task.
-
-    The sidecar verifies this token with the same signing key. Real
-    deployments swap to RS256 with rotating keys; HS256 with a 32-byte
-    key is acceptable for an internal trust boundary that is also fronted
-    by mTLS.
-    """
-    header = {"alg": "HS256", "typ": "JWT"}
-    now = int(time.time())
-    payload: dict[str, Any] = {
-        "iss": "clinical-copilot-bff",
-        "sub": user_id,
-        "patient_id": patient_id,
-        "purpose_of_use": purpose_of_use,
-        "scope": " ".join(scopes),
-        "iat": now,
-        "nbf": now,
-        "exp": now + lifetime_seconds,
-        "jti": secrets.token_urlsafe(8),
-    }
-    h = _b64url(json.dumps(header, separators=(",", ":")).encode())
-    p = _b64url(json.dumps(payload, separators=(",", ":")).encode())
-    signing_input = f"{h}.{p}".encode("ascii")
-    sig = hmac.new(signing_key.encode("utf-8"), signing_input, hashlib.sha256).digest()
-    return f"{h}.{p}.{_b64url(sig)}"
-
-
-def verify_task_token(token: str, *, signing_key: str) -> dict[str, Any]:
-    """Verify and decode a token. Raises ``ValueError`` on any failure."""
-    try:
-        header_b64, payload_b64, sig_b64 = token.split(".")
-    except ValueError as exc:
-        raise ValueError("malformed token") from exc
-    signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
-    expected = hmac.new(signing_key.encode("utf-8"), signing_input, hashlib.sha256).digest()
-    if not hmac.compare_digest(expected, _b64url_decode(sig_b64)):
-        raise ValueError("bad signature")
-    payload = json.loads(_b64url_decode(payload_b64))
-    if int(payload.get("exp", 0)) <= int(time.time()):
-        raise ValueError("expired")
-    if int(payload.get("nbf", 0)) > int(time.time()):
-        raise ValueError("not yet valid")
-    return payload
+from sidecar.auth import (  # noqa: E402, F401
+    TaskTokenClaims,
+    TaskTokenError,
+    mint_task_token,
+    verify_task_token,
+)

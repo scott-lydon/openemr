@@ -254,11 +254,20 @@ class Presenting(BaseModel):
 
     Mapped from one of three FHIR locations depending on capture point
     (ARCHITECTURE.md §2.4 "Symptom-source note").
+
+    ``symptoms`` is reserved for actual presenting complaints — the
+    things a clinician would treat as symptom datapoints in a pairwise
+    diagnostic comparison. ``visit_reason`` captures the encounter
+    purpose (annual exam, follow-up, medication refill) that should
+    *not* be paired against candidate diagnoses, because doing so
+    pollutes the comparator with nonsense pairs like
+    ``(routine annual exam × osteoporosis)``.
     """
 
     symptoms: list[str] = Field(default_factory=list)
     since: str | None = None
     source: str | None = None  # "patient portal pre-visit form" | "Encounter.reasonCode" | …
+    visit_reason: str | None = None  # "routine annual exam" | "follow-up" | …
 
 
 class PatientSnapshot(BaseModel):
