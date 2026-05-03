@@ -62,7 +62,14 @@ class SymfonyCommandRunner
         $commands = $this->findCommands();
         $app = new Application();
         foreach ($commands as $command) {
-            $app->addCommand($command);
+            // Use Application::add() rather than addCommand(): the
+            // latter was introduced in Symfony Console 7.4, but the
+            // openemr/openemr:flex Docker image bakes its vendor/
+            // tree at image build time and frequently ships an older
+            // Symfony version. add() exists in every Symfony 2+
+            // release, so this works on both fresh local clones and
+            // long-baked production images. Behaviour is identical.
+            $app->add($command);
         }
         $app->run();
     }
