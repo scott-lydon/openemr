@@ -151,6 +151,31 @@ switch ($search_any_type) {
                 </a>
             </div>
 
+            <?php
+            // ─── Clinical Co-Pilot launch button ─────────────────────────────
+            // Visible in the patient header on every patient-context page so
+            // it works regardless of which sub-view (Dashboard, Records,
+            // Visits, etc.) the user navigates to. Hidden when the
+            // clinical_copilot_url global is empty so a half-configured
+            // deploy doesn't surface a broken link. The href is built via
+            // Knockout's `attr` binding so the patient's pid is interpolated
+            // at click time. CSRF token is rendered server-side.
+            // ────────────────────────────────────────────────────────────────
+            $copilotBase = OEGlobalsBag::getInstance()->getString('clinical_copilot_url');
+            if ($copilotBase !== '') :
+                $copilotCsrf = \OpenEMR\Common\Csrf\CsrfUtils::collectCsrfToken();
+            ?>
+            <div class="btn-group btn-group-sm ml-2" role="group" aria-label="Clinical Co-Pilot">
+                <a class="btn btn-sm btn-primary"
+                   data-bind="attr: { href: '/interface/clinical_copilot/launch.php?pid=' + pid() + '&purpose=diagnostic_cross_check&csrf_token=<?php echo attr($copilotCsrf); ?>' }"
+                   target="copilot"
+                   onclick="top.restoreSession();"
+                   title="<?php echo xla("Open the Clinical Co-Pilot AI diagnostic cross-check for this patient"); ?>">
+                    <i class="fa fa-stethoscope mr-1" aria-hidden="true"></i><?php echo xlt("Co-Pilot"); ?>
+                </a>
+            </div>
+            <?php endif; ?>
+
             <!-- ko if: encounterArray().length > 0 -->
             <div class="patientCurrentEncounter mt-2 d-block">
                     <span><?php echo xlt("Open Encounter"); ?>:</span>
