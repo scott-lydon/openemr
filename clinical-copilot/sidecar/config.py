@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     # ─── PHI ───────────────────────────────────────────────────────────
     phi_scrub_enabled: bool = True
 
+    # ─── CORS ──────────────────────────────────────────────────────────
+    # Comma-separated origin list, e.g.
+    # "http://5.161.253.237,https://copilot.example.com". Empty (default)
+    # = same-origin only.
+    cors_allowed_origins: str = ""
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

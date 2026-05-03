@@ -142,8 +142,8 @@ async function run() {
     const dropped = (data.dropped || []).length;
     $('meta').innerHTML = [
       `<span class="pill">${t.total_pair_count ?? 0} pairs</span>`,
-      `<span class="pill">${t.total_prompt_tokens ?? 0} prompt tok</span>`,
-      `<span class="pill">${t.total_completion_tokens ?? 0} completion tok</span>`,
+      `<span class="pill">${t.total_prompt_tokens ?? 0} prompt tokens</span>`,
+      `<span class="pill">${t.total_completion_tokens ?? 0} completion tokens</span>`,
       `<span class="pill">$${(t.total_dollar_cost ?? 0).toFixed(4)}</span>`,
       `<span class="pill">${dropped} dropped</span>`,
     ].join(' ');

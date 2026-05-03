@@ -20,12 +20,12 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from sidecar.config import get_settings
 
+from sidecar.auth import mint_task_token, verify_task_token
+
 from .oauth import (
     OpenEMROAuthClient,
     OpenEMRTokenResponse,
     make_pkce_pair,
-    mint_task_token,
-    verify_task_token,
 )
 from .policy import PolicyStore
 
@@ -183,10 +183,20 @@ def create_app() -> FastAPI:
     @app.post("/internal/verify-token")
     def internal_verify_token(token: str = Body(..., embed=True)) -> dict[str, Any]:
         try:
-            payload = verify_task_token(token, signing_key=settings.bff_jwt_signing_key)
+            claims = verify_task_token(token, signing_key=settings.bff_jwt_signing_key)
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
-        return {"ok": True, "claims": payload}
+        return {
+            "ok": True,
+            "claims": {
+                "sub": claims.user_id,
+                "patient_id": claims.patient_id,
+                "purpose_of_use": claims.purpose_of_use,
+                "scope": claims.scope,
+                "iss": claims.issuer,
+                "exp": claims.expires_at,
+            },
+        }
 
     return app
 

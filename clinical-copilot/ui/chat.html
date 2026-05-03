@@ -280,11 +280,56 @@ function scrollToSource(table, id) {
   setTimeout(() => el.classList.remove('target'), 2400);
 }
 
+// ─── Auth: read the BFF-minted task token from the URL fragment ────────
+// The OpenEMR launch endpoint redirects here with #token=<jwt>&patient=<id>.
+// We strip the token from the visible hash after reading so it's not
+// pasted around accidentally; a copy of it stays in window history under
+// the original URL. Every fetch() to the sidecar adds the token as
+// Authorization: Bearer.
+function readTokenFromHash() {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const token = params.get('token');
+  if (token) {
+    // Hide the token from the visible URL after reading; keep patient/purpose.
+    params.delete('token');
+    const cleaned = params.toString();
+    const next = cleaned ? '#' + cleaned : window.location.pathname + window.location.search;
+    history.replaceState({}, '', next);
+  }
+  return token;
+}
+const TASK_TOKEN = readTokenFromHash();
+
+function authFetch(input, init) {
+  const opts = init ? { ...init } : {};
+  opts.headers = new Headers(opts.headers || {});
+  if (TASK_TOKEN) opts.headers.set('Authorization', 'Bearer ' + TASK_TOKEN);
+  return fetch(input, opts);
+}
+
+function showAuthBanner(message) {
+  // Render a precise error so a missing/expired token is diagnosable
+  // without opening devtools.
+  const banner = document.createElement('div');
+  banner.style.cssText = 'background:#f8d7da;color:#721c24;padding:14px 18px;'
+    + 'border-radius:8px;margin:18px;font-size:14px;line-height:1.5;'
+    + 'border:1px solid #f5c6cb;';
+  banner.textContent = message;
+  document.body.insertBefore(banner, document.body.firstChild);
+}
+
 async function loadPatients() {
+  // /patients only exists in mock/demo mode; the real launch flow knows
+  // the patient already (it's in the hash) so we can skip the picker.
+  const sel = $('patient');
+  if (!sel) return;
   try {
-    const res = await fetch(`${sidecarBase}/patients`);
+    const res = await authFetch(`${sidecarBase}/patients`);
+    if (!res.ok) {
+      sel.innerHTML = '<option value="">(picker disabled in production)</option>';
+      return;
+    }
     const items = await res.json();
-    const sel = $('patient');
     sel.innerHTML = '';
     if (!items.length) { sel.innerHTML = '<option value="">(none)</option>'; return; }
     for (const id of items) {
@@ -292,7 +337,7 @@ async function loadPatients() {
       opt.value = id; opt.textContent = id;
       sel.appendChild(opt);
     }
-  } catch (e) { $('patient').innerHTML = '<option>error</option>'; }
+  } catch (e) { sel.innerHTML = '<option>error</option>'; }
 }
 
 function renderTable(rows, columns, provenanceOf, emptyMsg) {
@@ -528,8 +573,8 @@ function setMeta(elId, resp) {
   const t = resp.telemetry || {};
   $(elId).innerHTML = [
     `<span>${t.total_pair_count ?? 0} pairs</span>`,
-    `<span>${t.total_prompt_tokens ?? 0} prompt tok</span>`,
-    `<span>${t.total_completion_tokens ?? 0} completion tok</span>`,
+    `<span>${t.total_prompt_tokens ?? 0} prompt tokens</span>`,
+    `<span>${t.total_completion_tokens ?? 0} completion tokens</span>`,
     `<span>$${(t.total_dollar_cost ?? 0).toFixed(4)}</span>`,
     `<span>${(resp.dropped || []).length} dropped</span>`,
   ].join('');
@@ -560,40 +605,116 @@ async function runForPatient(patientId) {
   const useMock = new URLSearchParams(window.location.search).get('mock') === '1' || window.__COPILOT_DEMO__;
   const chatPath = useMock ? '/chat?mock=1' : '/chat';
 
+  if (!TASK_TOKEN && !useMock) {
+    showAuthBanner(
+      'No task token found in the URL. The Clinical Co-Pilot must be '
+      + 'opened from the OpenEMR patient summary "Clinical Co-Pilot (AI)" '
+      + 'button so the launch endpoint can mint a 5-minute token bound to '
+      + 'this user and patient. Direct links no longer work.'
+    );
+    return;
+  }
+
   // Snapshot fires its own request and renders the moment it lands —
   // AI latency does not block chart sections.
-  fetch(`${sidecarBase}/snapshot/${encodeURIComponent(uuid)}`)
-    .then(r => r.json())
+  authFetch(`${sidecarBase}/snapshot/${encodeURIComponent(uuid)}`)
+    .then(async r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.json().catch(() => ({}))).detail?.message || r.statusText}`);
+      return r.json();
+    })
     .then(renderSnapshot)
-    .catch(err => { $('ctx-line').textContent = 'snapshot unavailable'; });
+    .catch(err => { $('ctx-line').textContent = 'snapshot unavailable: ' + err.message; });
 
   // AI calls run in parallel but independently — dx and ce render as
   // each one returns rather than waiting on the slower of the two.
-  fetch(`${sidecarBase}${chatPath}`, {
+  authFetch(`${sidecarBase}${chatPath}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ patient_id: patientId, purpose: 'diagnostic_cross_check', user_id: 'dr.m@example.org' })
-  }).then(r => r.json()).then(renderDx)
-    .catch(err => { $('dx-body').innerHTML = `<div class="empty">Diagnostic cross-check failed: ${escape(String(err))}</div>`; });
+    body: JSON.stringify({ patient_id: patientId, purpose: 'diagnostic_cross_check' })
+  }).then(async r => {
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.json().catch(() => ({}))).detail?.message || r.statusText}`);
+    return r.json();
+  }).then(renderDx)
+    .catch(err => { $('dx-body').innerHTML = `<div class="empty">Diagnostic cross-check failed: ${escape(String(err.message || err))}</div>`; });
 
-  fetch(`${sidecarBase}${chatPath}`, {
+  authFetch(`${sidecarBase}${chatPath}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ patient_id: patientId, purpose: 'chart_error_scan', user_id: 'dr.m@example.org' })
-  }).then(r => r.json()).then(renderCe)
-    .catch(err => { $('ce-body').innerHTML = `<div class="empty">Chart-error scan failed: ${escape(String(err))}</div>`; });
+    body: JSON.stringify({ patient_id: patientId, purpose: 'chart_error_scan' })
+  }).then(async r => {
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.json().catch(() => ({}))).detail?.message || r.statusText}`);
+    return r.json();
+  }).then(renderCe)
+    .catch(err => { $('ce-body').innerHTML = `<div class="empty">Chart-error scan failed: ${escape(String(err.message || err))}</div>`; });
 }
 
-async function applyHashAndLoad() {
-  await loadPatients();
+// URL state. We use the hash so the existing `#patient=Patient/87413`
+// share-links keep working — but we now WRITE the hash whenever the
+// active patient changes so reload, share, and back/forward all reflect
+// the visible patient. pushState (not location.hash =) is used so we
+// don't trigger a reentrant `hashchange` event.
+function patientFromUrl() {
   const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-  let patient = params.get('patient');
-  if (!patient) patient = $('patient').options[0]?.value;
-  else if ([...$('patient').options].some(o => o.value === patient)) $('patient').value = patient;
-  if (patient) runForPatient(patient);
+  return params.get('patient');
 }
 
-$('patient').addEventListener('change', e => runForPatient(e.target.value));
-window.addEventListener('hashchange', applyHashAndLoad);
-applyHashAndLoad();
+function urlForPatient(patientId) {
+  return '#patient=' + encodeURIComponent(patientId);
+}
+
+function syncUrlForPatient(patientId, mode /* 'push' | 'replace' */) {
+  const next = urlForPatient(patientId);
+  if (window.location.hash === next) return;
+  const state = { patient: patientId };
+  if (mode === 'push') history.pushState(state, '', next);
+  else history.replaceState(state, '', next);
+}
+
+async function applyUrlAndLoad() {
+  await loadPatients();
+  const opts = $('patient').options;
+  if (!opts.length) return;
+  const fromUrl = patientFromUrl();
+  let patient = fromUrl && [...opts].some(o => o.value === fromUrl)
+    ? fromUrl
+    : opts[0]?.value;
+  if (!patient) return;
+  $('patient').value = patient;
+  // Lock the URL to whatever patient we actually rendered, even if the
+  // user arrived without a hash. Use replaceState so we don't pollute
+  // history on first paint.
+  syncUrlForPatient(patient, 'replace');
+  runForPatient(patient);
+}
+
+$('patient').addEventListener('change', e => {
+  const patient = e.target.value;
+  if (!patient) return;
+  // pushState so the user can navigate back to the previous patient.
+  syncUrlForPatient(patient, 'push');
+  runForPatient(patient);
+});
+
+// popstate fires for back/forward when we used pushState above.
+// hashchange fires if the user manually edits the URL hash.
+// Both routes converge on the same loader.
+window.addEventListener('popstate', () => {
+  const patient = patientFromUrl();
+  if (!patient) return;
+  if ([...$('patient').options].some(o => o.value === patient)) {
+    $('patient').value = patient;
+    runForPatient(patient);
+  }
+});
+window.addEventListener('hashchange', () => {
+  const patient = patientFromUrl();
+  if (!patient) return;
+  if ([...$('patient').options].some(o => o.value === patient)
+      && $('patient').value !== patient) {
+    $('patient').value = patient;
+    runForPatient(patient);
+  }
+});
+
+applyUrlAndLoad();
 </script>
 </body>
 </html>
