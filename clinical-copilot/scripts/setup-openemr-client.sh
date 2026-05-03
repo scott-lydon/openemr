@@ -173,10 +173,10 @@ PYEOF
 }
 
 # ─── Helper: derive the host-side OAuth base URL ──────────────────────────
-# Inside the sidecar container the OAuth base typically points at
-# host.docker.internal so the sidecar can reach OpenEMR running on the
-# host's docker daemon. From this script (running on the host) the
-# same endpoint is at localhost.
+# Initial bootstrap value. The script later replaces this with whatever
+# OpenEMR reports as its canonical token_endpoint via the SMART
+# discovery document (/.well-known/smart-configuration), so anything
+# in .env can be wrong without breaking the flow.
 host_oauth_base() {
   local raw
   raw="$(read_env_var COPILOT_OPENEMR_OAUTH_BASE)"
@@ -186,24 +186,81 @@ host_oauth_base() {
   echo "$raw" | sed 's|host\.docker\.internal|localhost|g'
 }
 
+# ─── Helper: discover OpenEMR's canonical OAuth + FHIR endpoints ──────────
+# Per the SMART App Launch v2 spec, every SMART-on-FHIR server publishes
+# a `/.well-known/smart-configuration` JSON document advertising the
+# absolute URLs of its token_endpoint and other OAuth metadata. OpenEMR's
+# JWTClientAuthenticationService uses the same configured site_addr_oath
+# to validate the `aud` claim, so reading the discovery document is the
+# only reliable way to learn the exact URL to put in `aud` (and to POST
+# to). Without it we are guessing — and any guess that does not match
+# site_addr_oath byte-for-byte fails with `invalid_client`.
+#
+# Sets the globals TOKEN_URL and FHIR_BASE_URL on success, exits non-zero
+# on failure with an explanatory message.
+discover_smart_endpoints() {
+  local oauth_seed fhir_seed
+  oauth_seed="$(host_oauth_base)"
+  # Try the OAuth-base well-known first, then the FHIR-base well-known.
+  # OpenEMR serves both, but only the OAuth base is reliably present
+  # from a fresh .env.
+  local candidates=(
+    "${oauth_seed%/}/.well-known/smart-configuration"
+    "$(read_env_var COPILOT_OPENEMR_FHIR_BASE)/.well-known/smart-configuration"
+    # Fall back to the OpenEMR HTTPS port + canonical site_addr_oath
+    # path, since the dev-easy compose puts SSL on :9300.
+    "https://localhost:9300/oauth2/${SITE}/.well-known/smart-configuration"
+    "https://localhost:9300/apis/${SITE}/fhir/.well-known/smart-configuration"
+  )
+  local body=""
+  local url=""
+  for url in "${candidates[@]}"; do
+    [ -z "$url" ] && continue
+    body="$(curl -sS -k --max-time 5 "$url" 2>/dev/null || true)"
+    if [ -n "$body" ] && printf '%s' "$body" | grep -q '"token_endpoint"'; then
+      echo "Discovered SMART config at $url"
+      break
+    fi
+    body=""
+  done
+  if [ -z "$body" ]; then
+    echo "ERROR: could not fetch /.well-known/smart-configuration from any of:" >&2
+    printf '  %s\n' "${candidates[@]}" >&2
+    echo "       OpenEMR may not be reachable. Check the openemr container is up:" >&2
+    echo "       docker logs --tail 30 $CONTAINER" >&2
+    return 1
+  fi
+  TOKEN_URL="$(printf '%s' "$body" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["token_endpoint"])')"
+  # Some servers publish a `fhir_endpoint` in the document; OpenEMR
+  # publishes its FHIR base as the `issuer` field, but the universally
+  # safe path is to derive it by stripping `/oauth2/<site>` off the
+  # token_endpoint and replacing it with `/apis/<site>/fhir`.
+  FHIR_BASE_URL="${TOKEN_URL%/oauth2/${SITE}/token}/apis/${SITE}/fhir"
+  if [ -z "$TOKEN_URL" ] || [ "$TOKEN_URL" = "$FHIR_BASE_URL" ]; then
+    echo "ERROR: smart-configuration response missing token_endpoint:" >&2
+    printf '%s\n' "$body" | head -c 400 >&2
+    echo "" >&2
+    return 1
+  fi
+}
+
 # ─── Helper: verify a (client_id, private_key) pair via /token ────────────
 # Mints a real SMART Backend Services jwt-bearer assertion (RFC 7523),
 # POSTs to OpenEMR /token, and returns 0 only if an access_token comes
-# back. Delegates to scripts/_openemr_jwt.py so the JWT signing logic
-# lives in one place.
+# back. Uses the canonical TOKEN_URL discovered from the SMART
+# discovery document (NOT whatever is in .env), because OpenEMR's
+# PermittedFor constraint on the `aud` claim only matches that exact
+# URL byte-for-byte.
 verify_credentials() {
   local id="$1" key_path="$2"
-  local base
-  base="$(host_oauth_base)"
-  local url="${base%/}/token"
   local insecure_flag=""
-  if [ "${base#https://}" != "$base" ]; then
+  if [ "${TOKEN_URL#https://}" != "$TOKEN_URL" ]; then
     insecure_flag="--insecure"
   fi
   "$PY" "$JWT_HELPER" verify \
     --client-id "$id" \
     --private-key "$key_path" \
-    --token-url "$url" \
+    --token-url "$TOKEN_URL" \
     $insecure_flag
 }
 
@@ -259,7 +316,8 @@ PYEOF
   docker exec "$container" mariadb \
     -h mysql -u openemr -popenemr -D openemr -N -B \
     -e "SELECT jwks FROM oauth_clients WHERE client_id = '$id';" 2>/dev/null \
-    | "$PY" -c 'import sys, json
+    | "$PY" -c '
+import sys, json
 raw = sys.stdin.read().strip()
 if not raw:
     print("  (empty result — client_id not found in oauth_clients)")
@@ -267,10 +325,13 @@ else:
     try:
         data = json.loads(raw)
         for k in data.get("keys", []):
-            print(f"  kid={k.get(\"kid\")} alg={k.get(\"alg\")} use={k.get(\"use\")} kty={k.get(\"kty\")}")
-        print("  full:", json.dumps(data, indent=2).replace("\n", "\n         "))
+            kid = k.get("kid"); alg = k.get("alg")
+            use = k.get("use"); kty = k.get("kty")
+            print("  kid={} alg={} use={} kty={}".format(kid, alg, use, kty))
+        full = json.dumps(data, indent=2).replace("\n", "\n         ")
+        print("  full:", full)
     except Exception as e:
-        print(f"  parse error: {e}; raw repr: {raw[:200]!r}")
+        print("  parse error: {}; raw repr: {!r}".format(e, raw[:200]))
 ' 2>&1 || echo "  (could not query oauth_clients)" >&2
 
   echo "" >&2
@@ -350,6 +411,14 @@ if [ -z "$OPENEMR_ROOT" ]; then
   exit 1
 fi
 echo "OpenEMR webroot   : $OPENEMR_ROOT (in container)"
+
+# ─── 2.5. Discover canonical OpenEMR endpoints via SMART config ───────────
+echo "Discovering OpenEMR SMART endpoints …"
+if ! discover_smart_endpoints; then
+  exit 1
+fi
+echo "Token endpoint    : $TOKEN_URL"
+echo "FHIR base         : $FHIR_BASE_URL"
 
 # ─── 3. Generate the RSA keypair (idempotent) ─────────────────────────────
 # RFC 7523 §3 — the sidecar signs jwt-bearer assertions with this
@@ -448,13 +517,29 @@ if [ -z "$CLIENT_ID" ]; then
   echo "✓ Provisioned (rotated=$ROTATED, removed $PREV_COUNT stale row(s), JWKS keys registered=$KEY_COUNT)."
 
   # ─── 6. Persist to .env ─────────────────────────────────────────────────
+  # Use the canonical OAuth + FHIR base URLs we discovered. The
+  # /.well-known/smart-configuration document is the authoritative
+  # source — anything else (a stale .env entry, a host.docker.internal
+  # reference left over from a docker-deploy attempt) would force the
+  # sidecar to send the wrong `aud` and fail every /token call with
+  # invalid_client.
+  # `local` is a function-only builtin; this block runs at top level.
+  OAUTH_BASE="${TOKEN_URL%/token}"
   write_env_var COPILOT_OPENEMR_CLIENT_ID         "$CLIENT_ID"
   write_env_var COPILOT_OPENEMR_PRIVATE_KEY_PATH  "$PRIVATE_KEY_PATH"
+  write_env_var COPILOT_OPENEMR_OAUTH_BASE        "$OAUTH_BASE"
+  write_env_var COPILOT_OPENEMR_FHIR_BASE         "$FHIR_BASE_URL"
+  # OpenEMR development-easy uses a self-signed certificate on :9300;
+  # the sidecar must accept it or the FHIR client library refuses
+  # the connection.
+  if [ "${TOKEN_URL#https://}" != "$TOKEN_URL" ]; then
+    write_env_var COPILOT_FHIR_VERIFY_SSL         "false"
+  fi
   # Wipe the legacy CLIENT_SECRET so an old value cannot mislead an
   # operator who checks the file. The sidecar does not use it.
   write_env_var COPILOT_OPENEMR_CLIENT_SECRET     ""
   chmod 600 "$ENV_FILE" || true
-  echo "✓ Wrote COPILOT_OPENEMR_CLIENT_ID and COPILOT_OPENEMR_PRIVATE_KEY_PATH to .env (mode 0600)."
+  echo "✓ Wrote CLIENT_ID, PRIVATE_KEY_PATH, OAUTH_BASE, FHIR_BASE to .env (mode 0600)."
 
   # ─── 7. Verify the new credentials end-to-end ──────────────────────────
   echo "Verifying with a real jwt-bearer assertion against $(host_oauth_base)/token …"
