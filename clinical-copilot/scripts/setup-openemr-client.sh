@@ -179,13 +179,20 @@ if [ "$REG_RC" -ne 0 ]; then
 fi
 
 # ─── 3. Parse credentials from Symfony table output ───────────────────────
-# Symfony's "table" rendering puts each row on a single line wrapped in
-# pipes, e.g.:
-#   | <client_id> | <secret> | <reg_token> | <uri_path> | <redir> | <grants> | 0 |
-# We pull the client id from the first column and the secret from the
-# second column of the data row (the row whose first cell is NOT a header).
-DATA_LINE="$(printf '%s\n' "$REG_OUTPUT" | awk -F '|' '
-  /^\s*\|/ && !/Client ID/ && !/--/ && NF >= 4 { print; exit }
+# Symfony's table renderer here uses the "compact" style: cells are
+# separated by 2+ spaces and rows are bracketed by lines of dashes.
+# We isolate the data row by looking for a line whose first two
+# whitespace-separated fields are base64url tokens of length >= 32
+# (the Client ID is 43 chars from base64url(random_bytes(32)), the
+# Client Secret is 86 chars from base64url(random_bytes(64)), per
+# OpenEMR's ClientRepository::generateClientId/Secret).
+#
+# A pure-dash border line ALSO matches [A-Za-z0-9_-]{32,} because
+# dashes are part of the character class, so we explicitly skip
+# lines that are just whitespace + dashes.
+DATA_LINE="$(printf '%s\n' "$REG_OUTPUT" | awk '
+  /^[[:space:]]*-+[-[:space:]]*$/ { next }
+  /^[[:space:]]+[A-Za-z0-9_-]{32,}[[:space:]]+[A-Za-z0-9_-]{32,}/ { print; exit }
 ')"
 
 if [ -z "$DATA_LINE" ]; then
@@ -196,8 +203,11 @@ if [ -z "$DATA_LINE" ]; then
   exit 75
 fi
 
-CLIENT_ID="$(printf '%s' "$DATA_LINE"  | awk -F '|' '{ gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2 }')"
-CLIENT_SECRET="$(printf '%s' "$DATA_LINE" | awk -F '|' '{ gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3); print $3 }')"
+# Split on 2+ whitespace characters. The leading whitespace at the
+# start of the data line becomes an empty $1, so the Client ID is
+# $2 and the Client Secret is $3.
+CLIENT_ID="$(printf '%s' "$DATA_LINE"     | awk -F '[[:space:]][[:space:]]+' '{ print $2 }')"
+CLIENT_SECRET="$(printf '%s' "$DATA_LINE" | awk -F '[[:space:]][[:space:]]+' '{ print $3 }')"
 
 if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
   echo "ERROR: parsed empty client_id or client_secret." >&2
