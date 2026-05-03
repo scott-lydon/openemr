@@ -13,9 +13,51 @@ the snapshot.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from sidecar.snapshot import PatientSnapshot, Provenance
+
+
+# Phrases that describe the *encounter purpose*, not a presenting complaint.
+# A symptom row like "(routine annual exam × osteoporosis)" produces
+# meaningless LLM judgments and inflates token cost; we filter them at the
+# pair-generation boundary so the bug surfaces in tests rather than the UI.
+# Keep this list tight — it must catch only encounter-purpose phrases that
+# would never legitimately be a chief complaint.
+_VISIT_REASON_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(rf"\b{p}\b", re.IGNORECASE)
+    for p in (
+        r"routine annual exam",
+        r"annual exam",
+        r"annual physical",
+        r"wellness (?:visit|check|exam)",
+        r"well[- ]child",
+        r"well[- ]woman",
+        r"medicare annual wellness",
+        r"medication (?:refill|reconciliation|review)",
+        r"prescription refill",
+        r"follow[- ]?up(?: visit)?",
+        r"f/u visit",
+        r"established patient visit",
+        r"new patient visit",
+        r"check[- ]?up",
+        r"physical exam(?:ination)?",
+        r"preventive (?:visit|care|exam)",
+        r"vaccination(?: visit)?",
+        r"immunization(?: visit)?",
+        r"lab review",
+        r"imaging review",
+        r"results review",
+        r"referral",
+    )
+)
+
+
+def _looks_like_visit_reason(symptom: str) -> bool:
+    """Return True if ``symptom`` is an encounter purpose, not a complaint."""
+
+    return any(p.search(symptom) for p in _VISIT_REASON_PATTERNS)
 
 
 @dataclass(frozen=True)
@@ -60,6 +102,16 @@ def generate_pairs_a(snapshot: PatientSnapshot, *, max_pairs: int = 200) -> list
     since = snapshot.presenting.since
 
     for symptom in snapshot.presenting.symptoms:
+        # Belt and suspenders: the snapshot model has a separate
+        # ``presenting.visit_reason`` field for encounter purposes, but
+        # legacy fixtures and FHIR captures sometimes leak the reason
+        # into ``symptoms``. Filter here so a single dirty input cannot
+        # poison the pairwise comparator with rows like
+        # "(routine annual exam × osteoporosis)".
+        if _looks_like_visit_reason(symptom):
+            continue
+        if not symptom or not symptom.strip():
+            continue
         for label, prov, kind, obj in candidates:
             pairs.append(
                 PairA(
