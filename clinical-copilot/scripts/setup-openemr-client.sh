@@ -2,33 +2,47 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # setup-openemr-client.sh
 #
-# Register a confidential OpenEMR API client for the Clinical Co-Pilot
-# sidecar's client_credentials grant, then write the generated id/secret
-# into clinical-copilot/.env. Idempotent: safe to re-run.
+# One command, fully automated. Takes the Clinical Co-Pilot sidecar from
+# "broken because COPILOT_OPENEMR_CLIENT_SECRET is empty" to "fully
+# verified, sidecar restarted, /health responding". Safe to re-run any
+# number of times: orphan client rows never accumulate.
 #
 # Usage:
 #     bash clinical-copilot/scripts/setup-openemr-client.sh
 #     bash clinical-copilot/scripts/setup-openemr-client.sh --site=default
+#     bash clinical-copilot/scripts/setup-openemr-client.sh --no-restart
+#     bash clinical-copilot/scripts/setup-openemr-client.sh --force
 #
-# Strategy:
-#   1. Detect the running OpenEMR docker container (development-easy
-#      compose project).
-#   2. Run `bin/console openemr-dev:register-api-test-client` inside that
-#      container. The command generates a random client_id and
-#      client_secret, inserts the row into oauth_clients, marks it
-#      is_enabled=1, and prints both values in a Symfony table.
-#   3. Parse client_id / client_secret out of the table.
-#   4. Rewrite COPILOT_OPENEMR_CLIENT_ID and COPILOT_OPENEMR_CLIENT_SECRET
-#      in clinical-copilot/.env (creating .env from .env.example if it does
-#      not yet exist).
-#   5. Restart the sidecar (or tell the user to) so the new secret is read.
+# Steps:
+#   0. Bootstrap clinical-copilot/.env from .env.example if missing.
+#   1. Detect the running OpenEMR docker container.
+#   2. Resolve the OpenEMR webroot inside that container.
+#   3. Read the existing client_id and client_secret from .env, and
+#      verify them against OpenEMR's /token endpoint. If they still
+#      work, skip provisioning entirely (unless --force is passed).
+#   4. Run `bin/console clinical-copilot:provision-api-client` inside
+#      the container. That command idempotently deletes every
+#      "Clinical Co-Pilot Sidecar"-named oauth_clients row, inserts a
+#      fresh one, and prints a single JSON line with the credentials.
+#   5. Parse the JSON, write COPILOT_OPENEMR_CLIENT_ID and
+#      COPILOT_OPENEMR_CLIENT_SECRET into .env, chmod 600.
+#   6. Verify the new credentials against /token. If verification
+#      fails, exit non-zero with the exact HTTP status and body.
+#   7. Restart the sidecar:
+#        a. kill anything bound to TCP port 8801,
+#        b. relaunch launch-sidecar.command in the background,
+#        c. poll /health until it returns 200 (max 60 s),
+#        d. on timeout, print the tail of .launch.log and exit non-zero.
+#      --no-restart skips this whole block (useful in CI).
 #
-# Safety:
-#   - The script never echoes the secret to stdout once .env has been
-#     written. The credentials live exactly two places: oauth_clients and
-#     .env (gitignored).
-#   - If docker is not available, the script prints click-by-click
-#     instructions for the OpenEMR admin UI as a fallback.
+# Exit codes:
+#   0   success
+#   1   environment problem (no docker, no container, no python3, etc.)
+#   2   provisioning command failed inside the container
+#   3   credential verification against /token failed
+#   4   sidecar relaunched but never became healthy
+#  64   bad CLI argument
+#  70   .env.example missing (cannot bootstrap)
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -37,12 +51,21 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COPILOT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$COPILOT_ROOT/.env"
 ENV_EXAMPLE="$COPILOT_ROOT/.env.example"
+LAUNCH_SCRIPT="$COPILOT_ROOT/launch-sidecar.command"
+LAUNCH_LOG="$COPILOT_ROOT/.launch.log"
 SITE="default"
+RESTART=1
+FORCE=0
+SIDECAR_PORT=8801
+SIDECAR_HEALTH_URL="http://127.0.0.1:${SIDECAR_PORT}/health"
+SIDECAR_HEALTH_TIMEOUT_SECONDS=60
 
 # ─── Argument parsing ─────────────────────────────────────────────────────
 for arg in "$@"; do
   case "$arg" in
-    --site=*) SITE="${arg#--site=}" ;;
+    --site=*)        SITE="${arg#--site=}" ;;
+    --no-restart)    RESTART=0 ;;
+    --force)         FORCE=1 ;;
     -h|--help)
       grep -E '^# ' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -55,11 +78,98 @@ for arg in "$@"; do
   esac
 done
 
-echo "── Clinical Co-Pilot: OpenEMR API client setup ──"
+echo "── Clinical Co-Pilot setup ──"
 echo "Project root  : $COPILOT_ROOT"
 echo "Site          : $SITE"
+echo "Auto-restart  : $([ "$RESTART" = "1" ] && echo yes || echo no)"
+echo "Force re-prov : $([ "$FORCE"   = "1" ] && echo yes || echo no)"
 
-# ─── 0. .env bootstrap ────────────────────────────────────────────────────
+# ─── Helper: read a single env var from .env (last assignment wins) ───────
+read_env_var() {
+  local key="$1"
+  [ -f "$ENV_FILE" ] || return 0
+  awk -F '=' -v k="$key" '
+    $0 ~ "^[[:space:]]*"k"=" {
+      sub("^[^=]*=", "", $0)
+      val = $0
+    }
+    END { print val }
+  ' "$ENV_FILE"
+}
+
+# ─── Helper: rewrite a key=value pair in .env (or append if absent) ───────
+# Uses python3 because in-place sed is non-portable across BSD (macOS)
+# and GNU. python3 is required for the sidecar so it is always present.
+write_env_var() {
+  local key="$1" value="$2"
+  KEY="$key" VALUE="$value" ENV_FILE="$ENV_FILE" python3 - <<'PYEOF'
+import os
+import pathlib
+
+env_path = pathlib.Path(os.environ["ENV_FILE"])
+key = os.environ["KEY"]
+value = os.environ["VALUE"]
+
+lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
+found = False
+for i, line in enumerate(lines):
+    stripped = line.lstrip()
+    if stripped.startswith(f"{key}=") and not stripped.startswith("#"):
+        newline = "\n" if line.endswith("\n") else ""
+        lines[i] = f"{key}={value}{newline}"
+        found = True
+        # Don't break — overwrite every assignment of this key,
+        # otherwise a stale duplicate later in the file would
+        # silently override the value we just wrote.
+trailing = "" if (lines and lines[-1].endswith("\n")) else "\n"
+if not found:
+    lines.append(f"{trailing}{key}={value}\n")
+env_path.write_text("".join(lines), encoding="utf-8")
+PYEOF
+}
+
+# ─── Helper: derive the host-side OAuth base URL ──────────────────────────
+# Inside the sidecar container the OAuth base typically points at
+# host.docker.internal so the sidecar can reach OpenEMR running on the
+# host's docker daemon. From this script (running on the host) the
+# same endpoint is at localhost.
+host_oauth_base() {
+  local raw
+  raw="$(read_env_var COPILOT_OPENEMR_OAUTH_BASE)"
+  if [ -z "$raw" ]; then
+    raw="http://localhost:8300/oauth2/${SITE}"
+  fi
+  echo "$raw" | sed 's|host\.docker\.internal|localhost|g'
+}
+
+# ─── Helper: verify a (client_id, client_secret) pair via /token ──────────
+# Returns 0 if OpenEMR issues an access_token, non-zero otherwise.
+# Prints the HTTP status and a snippet of the body to stderr on failure.
+verify_credentials() {
+  local id="$1" secret="$2"
+  local base
+  base="$(host_oauth_base)"
+  local url="${base%/}/token"
+  local tmp
+  tmp="$(mktemp)"
+  local http
+  http="$(curl -sS -k -o "$tmp" -w '%{http_code}' \
+    -u "$id:$secret" \
+    --data 'grant_type=client_credentials&scope=system/Patient.read' \
+    "$url" 2>/dev/null || echo "000")"
+  if [ "$http" = "200" ] && grep -q '"access_token"' "$tmp"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  echo "  /token returned HTTP $http from $url" >&2
+  echo "  body (first 300 chars):" >&2
+  head -c 300 "$tmp" >&2
+  echo "" >&2
+  rm -f "$tmp"
+  return 1
+}
+
+# ─── 0. Bootstrap .env ────────────────────────────────────────────────────
 if [ ! -f "$ENV_FILE" ]; then
   if [ ! -f "$ENV_EXAMPLE" ]; then
     echo "ERROR: $ENV_EXAMPLE missing — cannot bootstrap $ENV_FILE." >&2
@@ -69,74 +179,32 @@ if [ ! -f "$ENV_FILE" ]; then
   cp "$ENV_EXAMPLE" "$ENV_FILE"
 fi
 
-# ─── 1. Detect docker + OpenEMR container ─────────────────────────────────
-print_manual_instructions() {
-  cat <<'EOF'
-
-Could not register the client automatically. Do it through the OpenEMR
-admin UI instead — it takes about a minute:
-
-  1. Open http://localhost:8300/ and sign in as admin / pass.
-  2. Top menu: Administration → System → API Clients.
-  3. Click "Register New App".
-  4. Fill in the form:
-       App Name              : Clinical Co-Pilot Sidecar
-       App Launch URL        : (blank — backend service)
-       App Redirect URL      : http://localhost:8801/oauth/callback
-       Client Type           : confidential
-       SMART scopes (tick)   : system/Patient.read, system/Condition.read,
-                               system/MedicationRequest.read,
-                               system/AllergyIntolerance.read,
-                               system/Observation.read,
-                               system/Encounter.read,
-                               system/Procedure.read,
-                               system/DocumentReference.read
-       Grant types           : client_credentials (must be ticked)
-  5. Click "Submit".
-  6. The next page shows Client ID and Client Secret ONCE. Copy both.
-  7. Back in the API Clients list, find the new row, click "Enable", then
-     "Edit" → ensure every system/*.read scope shows as Trusted.
-  8. Edit clinical-copilot/.env and set:
-       COPILOT_OPENEMR_CLIENT_ID=<client id from step 6>
-       COPILOT_OPENEMR_CLIENT_SECRET=<client secret from step 6>
-  9. Restart the sidecar (Ctrl-C the launch-sidecar.command terminal and
-     re-run it, or `kill` whatever uvicorn process is on :8801 and
-     re-launch).
-EOF
-}
-
+# ─── 1. Docker + container detection ──────────────────────────────────────
 if ! command -v docker >/dev/null 2>&1; then
-  echo "ERROR: docker is not on PATH." >&2
-  print_manual_instructions
+  echo "ERROR: docker is not on PATH. Install Docker Desktop from" >&2
+  echo "       https://www.docker.com/products/docker-desktop/" >&2
   exit 1
 fi
 
-CONTAINER="$(docker ps --filter 'name=development-easy.*openemr.*1$' --format '{{.Names}}' | head -1)"
-if [ -z "$CONTAINER" ]; then
-  CONTAINER="$(docker ps --format '{{.Names}}' | grep -E 'openemr.*1$' | grep -v 'mysql\|phpmyadmin\|redis\|couchdb' | head -1 || true)"
+if ! docker info >/dev/null 2>&1; then
+  echo "ERROR: docker daemon not reachable. Start Docker Desktop and retry." >&2
+  exit 1
 fi
+
+CONTAINER="$(docker ps --format '{{.Names}}' \
+  | grep -E 'openemr' \
+  | grep -Ev 'mysql|phpmyadmin|redis|couchdb|mariadb' \
+  | head -1 || true)"
 
 if [ -z "$CONTAINER" ]; then
   echo "ERROR: no running OpenEMR container found." >&2
-  echo "Start it with: cd docker/development-easy && docker compose up -d --wait" >&2
-  print_manual_instructions
+  echo "Start the dev stack with:" >&2
+  echo "    cd \"$COPILOT_ROOT/../docker/development-easy\" && docker compose up --detach --wait" >&2
   exit 1
 fi
-echo "OpenEMR container: $CONTAINER"
+echo "OpenEMR container : $CONTAINER"
 
-# ─── 2. Run the existing OpenEMR Symfony command ──────────────────────────
-# bin/console openemr-dev:register-api-test-client
-#   --site            : OpenEMR site id (default = "default")
-#   --redirect-uri    : OAuth2 redirect URI (used by the auth-code grant
-#                       only; client_credentials ignores it)
-#   --launch-uri      : SMART launch URL (also unused for backend services)
-#
-# The container's default WORKDIR is not the OpenEMR webroot, so we
-# must run the command with bin/console resolved relative to the
-# webroot mount. The development-easy compose mounts the source at
-# /var/www/localhost/htdocs/openemr; we sniff for the bin/console
-# under that path first and fall back to /openemr (the read-only
-# alternate mount) if anything else changed.
+# ─── 2. Locate OpenEMR webroot inside the container ───────────────────────
 OPENEMR_ROOT_GUESSES=(
   '/var/www/localhost/htdocs/openemr'
   '/openemr'
@@ -148,133 +216,174 @@ for guess in "${OPENEMR_ROOT_GUESSES[@]}"; do
     break
   fi
 done
-
 if [ -z "$OPENEMR_ROOT" ]; then
   echo "ERROR: bin/console not found inside container under any of:" >&2
   printf '  %s\n' "${OPENEMR_ROOT_GUESSES[@]}" >&2
-  echo "Run \`docker exec $CONTAINER find / -name console -type f 2>/dev/null\` to locate it, then edit OPENEMR_ROOT_GUESSES in this script." >&2
-  print_manual_instructions
+  echo "Run \`docker exec $CONTAINER find / -name console -type f 2>/dev/null\` to locate it." >&2
   exit 1
 fi
-echo "OpenEMR webroot in container: $OPENEMR_ROOT"
-echo "Registering API client via bin/console openemr-dev:register-api-test-client …"
+echo "OpenEMR webroot   : $OPENEMR_ROOT (in container)"
 
-set +e
-REG_OUTPUT="$(docker exec -u root -w "$OPENEMR_ROOT" "$CONTAINER" \
-  php bin/console openemr-dev:register-api-test-client \
-    --site="$SITE" \
-    --redirect-uri='http://localhost:8801/oauth/callback' \
-    --launch-uri='' \
-    2>&1)"
-REG_RC=$?
-set -e
+# ─── 3. Skip provisioning when existing creds still work ──────────────────
+EXISTING_ID="$(read_env_var COPILOT_OPENEMR_CLIENT_ID)"
+EXISTING_SECRET="$(read_env_var COPILOT_OPENEMR_CLIENT_SECRET)"
+CLIENT_ID=""
+CLIENT_SECRET=""
+SKIPPED_PROVISION=0
 
-if [ "$REG_RC" -ne 0 ]; then
-  echo "ERROR: openemr-dev:register-api-test-client exited $REG_RC." >&2
-  echo "----- command output -----" >&2
-  printf '%s\n' "$REG_OUTPUT" >&2
-  echo "--------------------------" >&2
-  print_manual_instructions
-  exit "$REG_RC"
+if [ "$FORCE" = "0" ] && [ -n "$EXISTING_ID" ] && [ -n "$EXISTING_SECRET" ]; then
+  echo "Trying existing credentials in .env (client_id=${EXISTING_ID:0:12}…) …"
+  if verify_credentials "$EXISTING_ID" "$EXISTING_SECRET" 2>/dev/null; then
+    echo "✓ Existing credentials are still valid; skipping registration."
+    CLIENT_ID="$EXISTING_ID"
+    CLIENT_SECRET="$EXISTING_SECRET"
+    SKIPPED_PROVISION=1
+  else
+    echo "  Existing credentials no longer work; reprovisioning."
+  fi
 fi
 
-# ─── 3. Parse credentials from Symfony table output ───────────────────────
-# Symfony's table renderer here uses the "compact" style: cells are
-# separated by 2+ spaces and rows are bracketed by lines of dashes.
-# We isolate the data row by looking for a line whose first two
-# whitespace-separated fields are base64url tokens of length >= 32
-# (the Client ID is 43 chars from base64url(random_bytes(32)), the
-# Client Secret is 86 chars from base64url(random_bytes(64)), per
-# OpenEMR's ClientRepository::generateClientId/Secret).
-#
-# A pure-dash border line ALSO matches [A-Za-z0-9_-]{32,} because
-# dashes are part of the character class, so we explicitly skip
-# lines that are just whitespace + dashes.
-DATA_LINE="$(printf '%s\n' "$REG_OUTPUT" | awk '
-  /^[[:space:]]*-+[-[:space:]]*$/ { next }
-  /^[[:space:]]+[A-Za-z0-9_-]{32,}[[:space:]]+[A-Za-z0-9_-]{32,}/ { print; exit }
-')"
+# ─── 4. Provision (or rotate) via the Symfony command ─────────────────────
+if [ -z "$CLIENT_ID" ]; then
+  echo "Provisioning Clinical Co-Pilot API client in OpenEMR …"
+  set +e
+  PROV_OUTPUT="$(docker exec -u root -w "$OPENEMR_ROOT" "$CONTAINER" \
+    php bin/console clinical-copilot:provision-api-client \
+      --site="$SITE" \
+      2>/tmp/copilot-prov.err)"
+  PROV_RC=$?
+  set -e
 
-if [ -z "$DATA_LINE" ]; then
-  echo "ERROR: could not parse credentials from command output." >&2
-  echo "----- raw output -----" >&2
-  printf '%s\n' "$REG_OUTPUT" >&2
-  echo "----------------------" >&2
-  exit 75
+  if [ "$PROV_RC" -ne 0 ]; then
+    echo "ERROR: clinical-copilot:provision-api-client exited $PROV_RC." >&2
+    echo "----- stdout -----" >&2
+    printf '%s\n' "$PROV_OUTPUT" >&2
+    echo "----- stderr -----" >&2
+    cat /tmp/copilot-prov.err >&2 || true
+    echo "------------------" >&2
+    exit 2
+  fi
+
+  # Find the JSON payload. The Symfony command writes exactly one
+  # JSON line to stdout; downstream wrappers may add framework noise
+  # (deprecation banners, etc.) on adjacent lines, so grep for the
+  # one starting with `{"client_id"`.
+  JSON_LINE="$(printf '%s\n' "$PROV_OUTPUT" | grep -E '^\{"client_id"' | tail -1)"
+  if [ -z "$JSON_LINE" ]; then
+    echo "ERROR: provisioning command stdout did not contain a JSON payload." >&2
+    echo "----- raw stdout -----" >&2
+    printf '%s\n' "$PROV_OUTPUT" >&2
+    echo "----------------------" >&2
+    exit 2
+  fi
+
+  # Parse with python3 because it is the only JSON parser guaranteed
+  # to be present (the sidecar runs on Python).
+  CLIENT_ID="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')"
+  CLIENT_SECRET="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_secret"])')"
+  ROTATED="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("rotated") else "no")')"
+  PREV_COUNT="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("previous_count", 0))')"
+
+  if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
+    echo "ERROR: parsed empty client_id or client_secret from JSON payload." >&2
+    echo "JSON: $JSON_LINE" >&2
+    exit 2
+  fi
+  echo "✓ Provisioned (rotated=$ROTATED, removed $PREV_COUNT stale row(s))."
+
+  # ─── 5. Persist to .env ─────────────────────────────────────────────────
+  write_env_var COPILOT_OPENEMR_CLIENT_ID     "$CLIENT_ID"
+  write_env_var COPILOT_OPENEMR_CLIENT_SECRET "$CLIENT_SECRET"
+  chmod 600 "$ENV_FILE" || true
+  echo "✓ Wrote COPILOT_OPENEMR_CLIENT_ID and COPILOT_OPENEMR_CLIENT_SECRET to .env (mode 0600)."
+
+  # ─── 6. Verify the new credentials end-to-end ──────────────────────────
+  echo "Verifying new credentials via $(host_oauth_base)/token …"
+  if ! verify_credentials "$CLIENT_ID" "$CLIENT_SECRET"; then
+    echo "ERROR: newly provisioned credentials failed verification." >&2
+    echo "       The most common cause is OpenEMR's mariadb container not yet" >&2
+    echo "       being healthy after a fresh \`docker compose up\`. Wait 30 s" >&2
+    echo "       and re-run this script." >&2
+    exit 3
+  fi
+  echo "✓ Verified: OpenEMR issued an access token for the new client."
 fi
 
-# Split on 2+ whitespace characters. The leading whitespace at the
-# start of the data line becomes an empty $1, so the Client ID is
-# $2 and the Client Secret is $3.
-CLIENT_ID="$(printf '%s' "$DATA_LINE"     | awk -F '[[:space:]][[:space:]]+' '{ print $2 }')"
-CLIENT_SECRET="$(printf '%s' "$DATA_LINE" | awk -F '[[:space:]][[:space:]]+' '{ print $3 }')"
-
-if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
-  echo "ERROR: parsed empty client_id or client_secret." >&2
-  echo "Parsed line: $DATA_LINE" >&2
-  exit 75
+# ─── 7. Restart the sidecar ───────────────────────────────────────────────
+if [ "$RESTART" = "0" ]; then
+  echo "Skipping sidecar restart (--no-restart). Restart manually with:"
+  echo "    lsof -ti tcp:${SIDECAR_PORT} | xargs -r kill && bash $LAUNCH_SCRIPT"
+  echo "── done ──"
+  exit 0
 fi
 
-# ─── 4. Rewrite .env ──────────────────────────────────────────────────────
-# Use a Python one-liner because in-place sed is non-portable across BSD
-# (macOS) and GNU. Python is guaranteed to be present (the sidecar runs
-# on Python).
-PYTHON_BIN="$(command -v python3 || command -v python)"
-if [ -z "$PYTHON_BIN" ]; then
-  echo "ERROR: python3 not on PATH; cannot update .env safely." >&2
-  echo "Add these two lines to $ENV_FILE manually:" >&2
-  echo "  COPILOT_OPENEMR_CLIENT_ID=$CLIENT_ID" >&2
-  echo "  COPILOT_OPENEMR_CLIENT_SECRET=<the secret printed above>" >&2
+# Skip restart if we did nothing: existing creds were valid AND no sidecar is up.
+if [ "$SKIPPED_PROVISION" = "1" ] && ! lsof -ti "tcp:${SIDECAR_PORT}" >/dev/null 2>&1; then
+  echo "Sidecar is not running and creds are unchanged; nothing to restart."
+  echo "Start the sidecar with:  bash $LAUNCH_SCRIPT"
+  echo "── done ──"
+  exit 0
+fi
+
+SIDECAR_PIDS="$(lsof -ti "tcp:${SIDECAR_PORT}" 2>/dev/null || true)"
+if [ -n "$SIDECAR_PIDS" ]; then
+  echo "Stopping running sidecar PID(s): $SIDECAR_PIDS"
+  # shellcheck disable=SC2086
+  kill $SIDECAR_PIDS 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! lsof -ti "tcp:${SIDECAR_PORT}" >/dev/null 2>&1; then break; fi
+    sleep 1
+  done
+  if lsof -ti "tcp:${SIDECAR_PORT}" >/dev/null 2>&1; then
+    echo "  Sidecar did not exit after SIGTERM; sending SIGKILL." >&2
+    # shellcheck disable=SC2086
+    kill -9 $SIDECAR_PIDS 2>/dev/null || true
+    sleep 1
+  fi
+fi
+
+if [ ! -x "$LAUNCH_SCRIPT" ] && [ ! -f "$LAUNCH_SCRIPT" ]; then
+  echo "ERROR: $LAUNCH_SCRIPT not found; cannot relaunch sidecar." >&2
+  echo "       Start it manually once it exists." >&2
   exit 1
 fi
 
-CLIENT_ID="$CLIENT_ID" CLIENT_SECRET="$CLIENT_SECRET" ENV_FILE="$ENV_FILE" \
-  "$PYTHON_BIN" - <<'PYEOF'
-import os
-import pathlib
+echo "Relaunching sidecar in background (logs: $LAUNCH_LOG) …"
+# `nohup` so the background process survives this script's exit.
+# `setsid` would be cleaner but is not available on macOS by default;
+# `disown` removes the job from the current shell's job table so the
+# parent shell does not reap it on exit.
+nohup bash "$LAUNCH_SCRIPT" > "$LAUNCH_LOG" 2>&1 &
+SIDECAR_PID=$!
+disown 2>/dev/null || true
 
-env_path = pathlib.Path(os.environ["ENV_FILE"])
-client_id = os.environ["CLIENT_ID"]
-client_secret = os.environ["CLIENT_SECRET"]
+echo "Waiting up to ${SIDECAR_HEALTH_TIMEOUT_SECONDS}s for ${SIDECAR_HEALTH_URL} …"
+HEALTHY=0
+for _ in $(seq 1 "$SIDECAR_HEALTH_TIMEOUT_SECONDS"); do
+  if curl -fsS "$SIDECAR_HEALTH_URL" >/dev/null 2>&1; then
+    HEALTHY=1
+    break
+  fi
+  # If the launcher exited (e.g. dependency install failure), bail
+  # immediately rather than wait the full timeout.
+  if ! kill -0 "$SIDECAR_PID" 2>/dev/null; then
+    echo "ERROR: launcher process $SIDECAR_PID exited before /health responded." >&2
+    echo "----- last 40 lines of $LAUNCH_LOG -----" >&2
+    tail -40 "$LAUNCH_LOG" >&2 || true
+    echo "----------------------------------------" >&2
+    exit 4
+  fi
+  sleep 1
+done
 
-assignments = {
-    "COPILOT_OPENEMR_CLIENT_ID": client_id,
-    "COPILOT_OPENEMR_CLIENT_SECRET": client_secret,
-}
+if [ "$HEALTHY" != "1" ]; then
+  echo "ERROR: sidecar did not become healthy within ${SIDECAR_HEALTH_TIMEOUT_SECONDS}s." >&2
+  echo "----- last 40 lines of $LAUNCH_LOG -----" >&2
+  tail -40 "$LAUNCH_LOG" >&2 || true
+  echo "----------------------------------------" >&2
+  exit 4
+fi
 
-lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
-
-found = {key: False for key in assignments}
-for i, line in enumerate(lines):
-    stripped = line.lstrip()
-    for key, value in assignments.items():
-        # Match "KEY=" at start of a non-comment line. Preserve trailing
-        # newline so we don't merge lines together.
-        if stripped.startswith(f"{key}=") and not stripped.startswith("#"):
-            newline = "\n" if line.endswith("\n") else ""
-            lines[i] = f"{key}={value}{newline}"
-            found[key] = True
-            break
-
-# Append any keys that were not present.
-trailing = "" if (lines and lines[-1].endswith("\n")) else "\n"
-for key, present in found.items():
-    if not present:
-        lines.append(f"{trailing}{key}={assignments[key]}\n")
-        trailing = ""
-
-env_path.write_text("".join(lines), encoding="utf-8")
-print(f"Updated {env_path} (COPILOT_OPENEMR_CLIENT_ID, COPILOT_OPENEMR_CLIENT_SECRET).")
-PYEOF
-
-# Restrict .env permissions in case the umask is loose. The secret is
-# now on disk; the file mode should reflect that.
-chmod 600 "$ENV_FILE" || true
-
-unset CLIENT_SECRET
-
-echo
-echo "✅ Done. Client registered and .env updated."
-echo "   Restart the sidecar so it picks up the new secret:"
-echo "       lsof -ti tcp:8801 | xargs -r kill"
-echo "       bash $COPILOT_ROOT/launch-sidecar.command"
+echo "✓ Sidecar is healthy on $SIDECAR_HEALTH_URL"
+echo "✅ All set. Open the Clinical Co-Pilot from any patient summary in OpenEMR."
+echo "── done ──"
