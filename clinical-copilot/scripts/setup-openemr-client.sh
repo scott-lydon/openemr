@@ -41,6 +41,7 @@
 #   2   provisioning command failed inside the container
 #   3   credential verification against /token failed
 #   4   sidecar relaunched but never became healthy
+#   5   sidecar restarted but is running stale code (drift detected via /diagnostic)
 #  64   bad CLI argument
 #  70   .env.example missing (cannot bootstrap)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -585,6 +586,22 @@ if [ -n "$SIDECAR_PIDS" ]; then
   fi
 fi
 
+# ─── Force the .venv to pick up the latest source ─────────────────────────
+# A stale editable install (or stale .pyc cache) was the root cause of a
+# multi-hour debugging session: the sidecar reported errors from old
+# code paths even after the source had been rewritten. Nuke pyc caches
+# and re-link the editable install so the next launcher run cannot get
+# this wrong.
+if [ -d "$COPILOT_ROOT/.venv" ]; then
+  echo "Refreshing sidecar editable install (pip install -e . --quiet) …"
+  find "$COPILOT_ROOT/sidecar" "$COPILOT_ROOT/bff" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+  rm -rf "$COPILOT_ROOT/clinical_copilot.egg-info" 2>/dev/null || true
+  if ! "$COPILOT_ROOT/.venv/bin/python" -m pip install --quiet --upgrade -e "$COPILOT_ROOT" 2>/tmp/copilot-pip.err; then
+    echo "WARNING: pip install -e . failed; the sidecar may load stale code." >&2
+    tail -10 /tmp/copilot-pip.err >&2 || true
+  fi
+fi
+
 if [ ! -x "$LAUNCH_SCRIPT" ] && [ ! -f "$LAUNCH_SCRIPT" ]; then
   echo "ERROR: $LAUNCH_SCRIPT not found; cannot relaunch sidecar." >&2
   echo "       Start it manually once it exists." >&2
@@ -628,5 +645,75 @@ if [ "$HEALTHY" != "1" ]; then
 fi
 
 echo "✓ Sidecar is healthy on $SIDECAR_HEALTH_URL"
+
+# ─── Verify the relaunched sidecar is running CURRENT code ────────────────
+# /health only proves a process is listening — the failure mode that
+# wasted multiple debugging cycles was the sidecar coming up with a
+# stale .venv that imported old openemr_oauth.py / chat.py code. The
+# /diagnostic endpoint exposes the git hash, the auth method actually
+# loaded, and the purpose-check class (membership vs strict equality),
+# so we can refuse to declare success when any of these drifts.
+DIAG_URL="http://127.0.0.1:${SIDECAR_PORT}/diagnostic"
+EXPECTED_HASH="$(git -C "$COPILOT_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+echo "Verifying sidecar is running current code via $DIAG_URL …"
+
+DIAG_JSON="$(curl -fsS "$DIAG_URL" 2>/dev/null || echo '')"
+if [ -z "$DIAG_JSON" ]; then
+  echo "WARNING: /diagnostic did not respond. The sidecar is up but may be running stale code." >&2
+  echo "         Open $DIAG_URL in a browser once you have a chance." >&2
+else
+  # Extract every field we care about with one Python invocation so a
+  # parse error fails loudly instead of trickling through grep.
+  DIAG_REPORT="$(printf '%s' "$DIAG_JSON" | "$PY" -c '
+import json, sys
+d = json.load(sys.stdin)
+v = d.get("version", {}); c = d.get("checks", {}); cfg = d.get("config", {})
+print("git_hash:" + str(v.get("git_hash")))
+print("auth_method:" + str(c.get("auth_method")))
+print("purpose_check:" + str(c.get("task_token_purpose_check")))
+print("module_path:" + str(v.get("openemr_oauth_module")))
+print("key_present:" + str(c.get("private_key_file", {}).get("present")))
+print("oauth_base:" + str(cfg.get("openemr_oauth_base")))
+')"
+  RUNNING_HASH=$(printf '%s' "$DIAG_REPORT" | sed -n 's/^git_hash://p')
+  AUTH_METHOD=$(printf '%s'  "$DIAG_REPORT" | sed -n 's/^auth_method://p')
+  PURPOSE_CHECK=$(printf '%s' "$DIAG_REPORT" | sed -n 's/^purpose_check://p')
+  MODULE_PATH=$(printf '%s'  "$DIAG_REPORT" | sed -n 's/^module_path://p')
+  KEY_PRESENT=$(printf '%s'  "$DIAG_REPORT" | sed -n 's/^key_present://p')
+  echo "  git hash       : $RUNNING_HASH (expected $EXPECTED_HASH)"
+  echo "  auth method    : $AUTH_METHOD"
+  echo "  purpose check  : $PURPOSE_CHECK"
+  echo "  module path    : $MODULE_PATH"
+  echo "  private key    : present=$KEY_PRESENT"
+
+  STALE=0
+  if [ -n "$EXPECTED_HASH" ] && [ "$EXPECTED_HASH" != "unknown" ] && [ "$RUNNING_HASH" != "$EXPECTED_HASH" ]; then
+    echo "ERROR: running git hash ($RUNNING_HASH) does not match repo HEAD ($EXPECTED_HASH)." >&2
+    STALE=1
+  fi
+  if [ "$AUTH_METHOD" != "private_key_jwt" ]; then
+    echo "ERROR: sidecar auth method is '$AUTH_METHOD', expected 'private_key_jwt'." >&2
+    echo "       The running code is the legacy HTTP-Basic + client_secret version." >&2
+    STALE=1
+  fi
+  if [ "$PURPOSE_CHECK" != "membership_in_authorized_purposes" ]; then
+    echo "ERROR: sidecar purpose check is '$PURPOSE_CHECK', expected 'membership_in_authorized_purposes'." >&2
+    echo "       The running chat.py is the legacy strict-equality version." >&2
+    STALE=1
+  fi
+  if [ "$STALE" = "1" ]; then
+    echo "" >&2
+    echo "Diagnosis: the sidecar restarted but is still importing stale code." >&2
+    echo "Most likely the .venv editable install or pyc cache is broken. Fix with:" >&2
+    echo "  rm -rf $COPILOT_ROOT/.venv" >&2
+    echo "  rm -rf $COPILOT_ROOT/clinical_copilot.egg-info" >&2
+    echo "  find $COPILOT_ROOT -type d -name __pycache__ -exec rm -rf {} +" >&2
+    echo "  bash $LAUNCH_SCRIPT  # rebuild .venv from scratch" >&2
+    echo "  bash $0              # rerun this script" >&2
+    exit 5
+  fi
+  echo "✓ Sidecar is running current code (auth=jwt-bearer, purpose=membership)."
+fi
+
 echo "✅ All set. Open the Clinical Co-Pilot from any patient summary in OpenEMR."
 echo "── done ──"

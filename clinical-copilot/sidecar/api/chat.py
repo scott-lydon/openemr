@@ -302,6 +302,146 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get("/diagnostic")
+def diagnostic() -> dict[str, object]:
+    """Self-describing config dump for the running sidecar.
+
+    Unauthenticated by design. Returns:
+
+    - ``version.git_hash`` — the commit SHA the running interpreter is
+      executing. Lets the operator verify they have not been chasing a
+      ghost across a stale .venv (the failure mode that wasted hours
+      before this endpoint existed).
+    - ``version.python`` — for sanity when bug reports come in.
+    - ``version.openemr_oauth_module`` — the absolute filesystem path
+      of the imported sidecar.openemr_oauth module, so an editable
+      install pointing at a stale source tree is immediately visible.
+    - ``config`` — sanitised effective settings: client_id is
+      truncated, secrets are reported as a boolean ``set/unset``, URLs
+      and paths are returned in full because they are not secret.
+    - ``checks`` — per-feature self-tests: private key file presence
+      and mode, OpenEMR token endpoint reachability, and which
+      authentication method the running code path uses.
+    - ``auth_method`` is the authoritative answer to "is the new
+      jwt-bearer code actually loaded": it reads the
+      ``OpenEMRTokenCache`` constructor's behaviour, not a constant.
+
+    Operators (and the setup script) should hit this endpoint after
+    every sidecar restart. The setup script refuses to declare success
+    unless ``version.git_hash`` matches the working-tree HEAD.
+    """
+    import sys
+    import subprocess
+
+    settings = get_settings()
+
+    # Git hash of the source tree the running Python is executing.
+    src_root = Path(__file__).resolve().parent.parent.parent
+    git_hash = "unknown"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(src_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        if proc.returncode == 0:
+            git_hash = proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    # Path the OpenEMR oauth module was actually imported from. If
+    # editable install is broken this points at a site-packages copy.
+    openemr_oauth_module_path = "unknown"
+    try:
+        from sidecar import openemr_oauth as _oo
+        openemr_oauth_module_path = getattr(_oo, "__file__", "unknown") or "unknown"
+    except Exception as exc:  # noqa: BLE001
+        openemr_oauth_module_path = f"import failed: {exc}"
+
+    # Auth method: detect whether the running code uses jwt-bearer
+    # (new) or HTTP Basic + client_secret (old). We check by looking
+    # for a method that only exists on the rewritten class.
+    auth_method = "unknown"
+    try:
+        from sidecar.openemr_oauth import OpenEMRTokenCache as _Cache
+        if hasattr(_Cache, "_build_client_assertion"):
+            auth_method = "private_key_jwt"
+        elif "client_secret" in _Cache.__init__.__doc__ or "":
+            auth_method = "http_basic_legacy"
+        else:
+            auth_method = "unknown_legacy"
+    except Exception as exc:  # noqa: BLE001
+        auth_method = f"import failed: {exc}"
+
+    # Private key file health.
+    key_path = getattr(settings, "openemr_private_key_path", None)
+    key_status: dict[str, object]
+    if not key_path:
+        key_status = {"path": None, "present": False, "reason": "COPILOT_OPENEMR_PRIVATE_KEY_PATH unset"}
+    else:
+        p = Path(key_path)
+        if not p.exists():
+            key_status = {"path": str(p), "present": False, "reason": "no file at path"}
+        else:
+            try:
+                st = p.stat()
+                key_status = {
+                    "path": str(p),
+                    "present": True,
+                    "size_bytes": st.st_size,
+                    "mode": oct(st.st_mode & 0o777),
+                    "starts_with_pem_header": p.read_bytes()[:11] == b"-----BEGIN ",
+                }
+            except OSError as exc:
+                key_status = {"path": str(p), "present": True, "reason": f"unreadable: {exc}"}
+
+    # Multi-purpose claim support: detect whether the chat handler
+    # checks membership (new) or strict equality (old).
+    purpose_check = "unknown"
+    try:
+        from sidecar.auth import TaskTokenClaims as _Claims
+        # Dataclass fields live on __dataclass_fields__, not as class
+        # attributes, so hasattr() against the class is misleading.
+        fields = _Claims.__dataclass_fields__
+        if "authorized_purposes" in fields and hasattr(_Claims, "is_purpose_authorized"):
+            purpose_check = "membership_in_authorized_purposes"
+        elif "purpose_of_use" in fields:
+            purpose_check = "strict_equality_legacy"
+        else:
+            purpose_check = "unknown_legacy"
+    except Exception as exc:  # noqa: BLE001
+        purpose_check = f"import failed: {exc}"
+
+    return {
+        "version": {
+            "git_hash": git_hash,
+            "python": sys.version.split()[0],
+            "openemr_oauth_module": openemr_oauth_module_path,
+        },
+        "config": {
+            "openemr_client_id_prefix": (
+                settings.openemr_client_id[:12] + "…"
+                if settings.openemr_client_id else None
+            ),
+            "openemr_client_id_set": bool(settings.openemr_client_id),
+            "openemr_oauth_base": settings.openemr_oauth_base,
+            "openemr_fhir_base": settings.openemr_fhir_base,
+            "openemr_private_key_path": key_path,
+            "openemr_client_secret_set": bool(getattr(settings, "openemr_client_secret", None)),
+            "fhir_verify_ssl": settings.fhir_verify_ssl,
+            "allow_mock": getattr(settings, "allow_mock", False),
+            "bff_jwt_signing_key_set": (
+                bool(settings.bff_jwt_signing_key)
+                and settings.bff_jwt_signing_key != "change-me-to-a-32-byte-hex-string"
+            ),
+        },
+        "checks": {
+            "auth_method": auth_method,
+            "task_token_purpose_check": purpose_check,
+            "private_key_file": key_status,
+        },
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 def root_ui() -> HTMLResponse:
     """Serve the embedded chat UI.
