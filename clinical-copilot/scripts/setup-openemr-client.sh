@@ -583,6 +583,19 @@ if [ "$SKIPPED_PROVISION" = "1" ] && ! lsof -ti "tcp:${SIDECAR_PORT}" >/dev/null
   exit 0
 fi
 
+# ─── Catch a Docker container hijacking port 8801 ─────────────────────────
+# A previous `docker compose up` of clinical-copilot/docker-compose.yml
+# leaves Docker's port-forwarder (com.docker.backend) holding *:8801 on
+# the host. Browser requests then route to the in-container sidecar,
+# which is built from a (stale) image — every error in the UI looks
+# like the sidecar restart did nothing. Stop that compose stack first
+# so uvicorn on 127.0.0.1:8801 actually serves the requests.
+if lsof -nP -iTCP:${SIDECAR_PORT} -sTCP:LISTEN 2>/dev/null | grep -qi 'docker'; then
+  echo "Detected a Docker container forwarding TCP port ${SIDECAR_PORT}; stopping it."
+  echo "  (this is the clinical-copilot/docker-compose.yml stack — the dev-easy stack is unaffected)"
+  docker compose -f "$COPILOT_ROOT/docker-compose.yml" down >/dev/null 2>&1 || true
+fi
+
 SIDECAR_PIDS="$(lsof -ti "tcp:${SIDECAR_PORT}" 2>/dev/null || true)"
 if [ -n "$SIDECAR_PIDS" ]; then
   echo "Stopping running sidecar PID(s): $SIDECAR_PIDS"
