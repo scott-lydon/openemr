@@ -553,6 +553,20 @@ if [ -z "$CLIENT_ID" ]; then
   echo "✓ Verified: OpenEMR issued an access token for the new client."
 fi
 
+# ─── 7.5. Pin OpenEMR's clinical_copilot_url global to the local sidecar ──
+# The launch button generates URLs from this global. If it is left
+# pointing at a previous remote deployment (e.g. http://5.161.253.237:8801)
+# every click opens the OLD remote sidecar instead of the local one we
+# just verified, and every error message is on stale code. Force it to
+# the local sidecar so a single source of truth wins.
+DESIRED_LAUNCH_URL="http://localhost:${SIDECAR_PORT}"
+echo "Pinning OpenEMR clinical_copilot_url global → $DESIRED_LAUNCH_URL …"
+docker exec "$CONTAINER" mariadb -h mysql -uopenemr -popenemr -Dopenemr \
+  -e "INSERT INTO globals (gl_name, gl_index, gl_value) VALUES ('clinical_copilot_url', 0, '$DESIRED_LAUNCH_URL') ON DUPLICATE KEY UPDATE gl_value='$DESIRED_LAUNCH_URL';" \
+  >/dev/null 2>&1 \
+  && echo "✓ Pinned." \
+  || echo "WARNING: could not update clinical_copilot_url global; set it via Admin → Globals → Miscellaneous." >&2
+
 # ─── 7. Restart the sidecar ───────────────────────────────────────────────
 if [ "$RESTART" = "0" ]; then
   echo "Skipping sidecar restart (--no-restart). Restart manually with:"
