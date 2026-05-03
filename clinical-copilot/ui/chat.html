@@ -669,18 +669,27 @@ function syncUrlForPatient(patientId, mode /* 'push' | 'replace' */) {
 }
 
 async function applyUrlAndLoad() {
+  // Production launch path: the URL fragment carries the patient id from
+  // the OpenEMR launch endpoint. Use it whether or not the picker has
+  // entries; the picker is only populated in mock/demo mode.
+  const fromUrl = patientFromUrl();
+  if (fromUrl) {
+    // Best-effort populate the picker (mock mode only). Failure is fine.
+    await loadPatients().catch(() => {});
+    const opts = $('patient').options;
+    if (opts.length && [...opts].some(o => o.value === fromUrl)) {
+      $('patient').value = fromUrl;
+    }
+    syncUrlForPatient(fromUrl, 'replace');
+    runForPatient(fromUrl);
+    return;
+  }
+  // Demo / mock path: no patient in URL, fall back to first picker entry.
   await loadPatients();
   const opts = $('patient').options;
-  if (!opts.length) return;
-  const fromUrl = patientFromUrl();
-  let patient = fromUrl && [...opts].some(o => o.value === fromUrl)
-    ? fromUrl
-    : opts[0]?.value;
+  const patient = opts[0]?.value;
   if (!patient) return;
   $('patient').value = patient;
-  // Lock the URL to whatever patient we actually rendered, even if the
-  // user arrived without a hash. Use replaceState so we don't pollute
-  // history on first paint.
   syncUrlForPatient(patient, 'replace');
   runForPatient(patient);
 }
