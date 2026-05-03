@@ -77,6 +77,73 @@ def test_reconciler_maps_free_text_to_icd10() -> None:
     assert snap.active_problems[0].icd10 == "M10.9"
 
 
+def test_reconciler_reads_conditions_from_unified_bundle() -> None:
+    """Sidecar pulls a single ``Condition?patient={pid}`` (no filters)
+    because OpenEMR's filtered Condition query crashes; the reconciler
+    splits + filters in code instead."""
+    bundles = {
+        "conditions": {
+            "entry": [
+                {"resource": {
+                    "id": "p1", "code": {"text": "Gout"},
+                    "clinicalStatus": {"coding": [{"code": "active"}]},
+                    "verificationStatus": {"coding": [{"code": "confirmed"}]},
+                }},
+                {"resource": {
+                    "id": "p2", "code": {"text": "Hypertension"},
+                    "clinicalStatus": {"coding": [{"code": "active"}]},
+                    "verificationStatus": {"coding": [{"code": "confirmed"}]},
+                }},
+            ],
+        },
+        "medications": None, "allergies": None,
+        "vitals": None, "labs": None,
+    }
+    snap = reconcile(patient_uuid="Patient/87413", fhir_bundles=bundles)
+    titles = sorted(p.label for p in snap.active_problems)
+    assert titles == ["Gout", "Hypertension"]
+
+
+def test_reconciler_filters_out_resolved_conditions() -> None:
+    """A resolved condition should not be paired against new symptoms."""
+    bundles = {
+        "conditions": {
+            "entry": [
+                {"resource": {
+                    "id": "p1", "code": {"text": "Gout (active)"},
+                    "clinicalStatus": {"coding": [{"code": "active"}]},
+                }},
+                {"resource": {
+                    "id": "p2", "code": {"text": "Pneumonia (resolved)"},
+                    "clinicalStatus": {"coding": [{"code": "resolved"}]},
+                }},
+                {"resource": {
+                    "id": "p3", "code": {"text": "Sinusitis (inactive)"},
+                    "clinicalStatus": {"coding": [{"code": "inactive"}]},
+                }},
+            ],
+        },
+        "medications": None, "allergies": None,
+        "vitals": None, "labs": None,
+    }
+    snap = reconcile(patient_uuid="Patient/87413", fhir_bundles=bundles)
+    labels = [p.label for p in snap.active_problems]
+    assert labels == ["Gout (active)"]
+
+
+def test_reconciler_treats_missing_clinical_status_as_active() -> None:
+    """Old OpenEMR rows lack clinicalStatus; do not silently drop them."""
+    bundles = {
+        "conditions": {
+            "entry": [{"resource": {"id": "p1", "code": {"text": "Old gout"}}}],
+        },
+        "medications": None, "allergies": None,
+        "vitals": None, "labs": None,
+    }
+    snap = reconcile(patient_uuid="Patient/87413", fhir_bundles=bundles)
+    assert [p.label for p in snap.active_problems] == ["Old gout"]
+
+
 def test_reconciler_extracts_presenting_from_latest_encounter_reasonCode() -> None:
     """Encounter.reasonCode is OpenEMR's home for the chief complaint;
     the reconciler must pick the most recent encounter, split on `,` /

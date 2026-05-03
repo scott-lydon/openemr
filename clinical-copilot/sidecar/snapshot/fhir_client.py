@@ -51,9 +51,17 @@ class FhirResult:
 
 
 # Resources we always pull on the per-visit hot path.
+#
+# Condition is queried WITHOUT `category=…` or `clinical-status=…`
+# filters: OpenEMR's FHIR Condition mapper at this version returns HTTP
+# 500 ("SQL Statement failed on preparation") when those filters are
+# present. Pulling all of a patient's Conditions in one Bundle and
+# letting the reconciler split by ``category.coding[].code`` (problem-
+# list-item vs. encounter-diagnosis) and filter by
+# ``clinicalStatus.coding[].code`` is also faster — half the
+# round-trips, and the response is bounded by chart size.
 DEFAULT_RESOURCE_QUERIES: tuple[tuple[str, str], ...] = (
-    ("active_problems", "Condition?patient={pid}&category=problem-list-item&clinical-status=active"),
-    ("encounter_diagnoses", "Condition?patient={pid}&category=encounter-diagnosis"),
+    ("conditions", "Condition?patient={pid}"),
     ("medications", "MedicationRequest?patient={pid}"),
     ("allergies", "AllergyIntolerance?patient={pid}"),
     ("vitals", "Observation?patient={pid}&category=vital-signs&_count=50"),

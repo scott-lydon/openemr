@@ -342,6 +342,38 @@ def _reconcile_medications(meds: list[Medication]) -> tuple[list[Medication], li
     return out, flags
 
 
+_ACTIVE_CLINICAL_STATUSES: frozenset[str] = frozenset({
+    # FHIR R4 condition-clinical value set codes that mean "the patient
+    # currently has this condition". `inactive`, `remission`, `resolved`
+    # are excluded — pairing those against new presenting symptoms is
+    # noise (gout in remission is not a candidate for today's flare).
+    "active",
+    "recurrence",
+    "relapse",
+})
+
+
+def _condition_is_active(resource: Mapping[str, Any]) -> bool:
+    """True if a Condition's ``clinicalStatus.coding[].code`` is active.
+
+    OpenEMR's mapper occasionally omits ``clinicalStatus`` entirely on
+    legacy rows; we treat absence as active to avoid silently dropping
+    a real problem because of a missing column. The diagnostic
+    pair-generator filters by activity again downstream, so an extra
+    ambiguous row here is recoverable; a missing real problem is not.
+    """
+    cs = resource.get("clinicalStatus")
+    if not isinstance(cs, Mapping):
+        return True
+    codings = cs.get("coding")
+    if not isinstance(codings, list) or not codings:
+        return True
+    for c in codings:
+        if isinstance(c, Mapping) and (c.get("code") or "").lower() in _ACTIVE_CLINICAL_STATUSES:
+            return True
+    return False
+
+
 def _presenting_from_encounters(
     bundle: Mapping[str, Any] | None,
 ) -> Presenting | None:
@@ -418,16 +450,34 @@ def reconcile(
 
     quality_flags: list[QualityFlag] = []
 
+    # Conditions arrive in one unfiltered Bundle (see
+    # DEFAULT_RESOURCE_QUERIES note in fhir_client.py — OpenEMR's
+    # mapper crashes when category/clinical-status filters are sent).
+    # We split by category.coding[].code so problem-list items and
+    # encounter-diagnosis items can still be distinguished downstream,
+    # and we drop conditions whose clinicalStatus is not active /
+    # recurrence / relapse so the diagnostic-cross-check pair
+    # generator does not pair against a resolved problem. Older
+    # bundle keys ("active_problems", "encounter_diagnoses") are still
+    # honoured so callers that mock the FHIR response in tests do not
+    # break.
     problems: list[Problem] = []
-    for resource in _bundle_entries(fhir_bundles.get("active_problems")):
-        prob, flags = _problem_from_condition(resource)
-        problems.append(prob)
-        quality_flags.extend(flags)
-    for resource in _bundle_entries(fhir_bundles.get("encounter_diagnoses")):
-        prob, flags = _problem_from_condition(resource)
-        if not any(p.id == prob.id for p in problems):
+    seen_problem_ids: set[str] = set()
+
+    def _consume_conditions(resources: Iterable[Mapping[str, Any]]) -> None:
+        for resource in resources:
+            if not _condition_is_active(resource):
+                continue
+            prob, flags = _problem_from_condition(resource)
+            if prob.id in seen_problem_ids:
+                continue
+            seen_problem_ids.add(prob.id)
             problems.append(prob)
             quality_flags.extend(flags)
+
+    _consume_conditions(_bundle_entries(fhir_bundles.get("conditions")))
+    _consume_conditions(_bundle_entries(fhir_bundles.get("active_problems")))
+    _consume_conditions(_bundle_entries(fhir_bundles.get("encounter_diagnoses")))
 
     raw_meds = [
         _medication_from_request(r) for r in _bundle_entries(fhir_bundles.get("medications"))
