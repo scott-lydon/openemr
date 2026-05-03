@@ -88,6 +88,46 @@ echo "Site          : $SITE"
 echo "Auto-restart  : $([ "$RESTART" = "1" ] && echo yes || echo no)"
 echo "Force re-prov : $([ "$FORCE"   = "1" ] && echo yes || echo no)"
 
+# ─── Pick the right Python and ensure cryptography is importable ──────────
+# Prefer the sidecar's own .venv/bin/python — it already has every
+# dependency from pyproject.toml installed, including the cryptography
+# wheel that _openemr_jwt.py imports for RSA keygen and signing.
+# Fall back to system python3 only when no .venv exists yet (fresh
+# clone before the first launch-sidecar.command run).
+if [ -x "$COPILOT_ROOT/.venv/bin/python" ]; then
+  PY="$COPILOT_ROOT/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PY="$(command -v python3)"
+else
+  echo "ERROR: no usable Python found." >&2
+  echo "       Install Python 3.11+ with \`brew install python@3.12\` or" >&2
+  echo "       run \`bash $LAUNCH_SCRIPT\` once to bootstrap the sidecar's" >&2
+  echo "       .venv, then re-run this script." >&2
+  exit 1
+fi
+echo "Python        : $PY ($("$PY" -V 2>&1))"
+
+# Make sure cryptography is importable. The first run on a host that
+# only has system python3 will hit this path; the sidecar's .venv
+# already has it from PyJWT[crypto] in pyproject.toml.
+if ! "$PY" -c 'import cryptography' >/dev/null 2>&1; then
+  echo "Installing cryptography for $PY (one-time, ~5 s) …"
+  if "$PY" -m pip install --quiet cryptography 2>/dev/null; then
+    :
+  elif "$PY" -m pip install --quiet --user cryptography 2>/dev/null; then
+    :
+  elif "$PY" -m pip install --quiet --break-system-packages cryptography 2>/dev/null; then
+    :
+  else
+    echo "ERROR: could not install cryptography for $PY." >&2
+    echo "       Try installing it manually:" >&2
+    echo "         $PY -m pip install cryptography" >&2
+    echo "       Or bootstrap the sidecar .venv first:" >&2
+    echo "         bash $LAUNCH_SCRIPT  (Ctrl-C once it boots, then re-run this)" >&2
+    exit 1
+  fi
+fi
+
 # ─── Helper: read a single env var from .env (last assignment wins) ───────
 read_env_var() {
   local key="$1"
@@ -106,7 +146,7 @@ read_env_var() {
 # and GNU. python3 is required for the sidecar so it is always present.
 write_env_var() {
   local key="$1" value="$2"
-  KEY="$key" VALUE="$value" ENV_FILE="$ENV_FILE" python3 - <<'PYEOF'
+  KEY="$key" VALUE="$value" ENV_FILE="$ENV_FILE" "$PY" - <<'PYEOF'
 import os
 import pathlib
 
@@ -160,7 +200,7 @@ verify_credentials() {
   if [ "${base#https://}" != "$base" ]; then
     insecure_flag="--insecure"
   fi
-  python3 "$JWT_HELPER" verify \
+  "$PY" "$JWT_HELPER" verify \
     --client-id "$id" \
     --private-key "$key_path" \
     --token-url "$url" \
@@ -232,7 +272,7 @@ if [ "$FORCE" = "1" ]; then
   rm -f "$PRIVATE_KEY_PATH" "$JWKS_PATH"
 fi
 echo "Ensuring RSA keypair at $PRIVATE_KEY_PATH …"
-python3 "$JWT_HELPER" generate-keypair \
+"$PY" "$JWT_HELPER" generate-keypair \
   --private-out "$PRIVATE_KEY_PATH" \
   --jwks-out "$JWKS_PATH" \
   --kid 'clinical-copilot-sidecar'
@@ -306,10 +346,10 @@ if [ -z "$CLIENT_ID" ]; then
     exit 2
   fi
 
-  CLIENT_ID="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')"
-  ROTATED="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("rotated") else "no")')"
-  PREV_COUNT="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("previous_count", 0))')"
-  KEY_COUNT="$(printf '%s' "$JSON_LINE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("jwks_key_count", 0))')"
+  CLIENT_ID="$(printf '%s' "$JSON_LINE" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')"
+  ROTATED="$(printf '%s' "$JSON_LINE" | "$PY" -c 'import json,sys; print("yes" if json.load(sys.stdin).get("rotated") else "no")')"
+  PREV_COUNT="$(printf '%s' "$JSON_LINE" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("previous_count", 0))')"
+  KEY_COUNT="$(printf '%s' "$JSON_LINE" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("jwks_key_count", 0))')"
 
   if [ -z "$CLIENT_ID" ]; then
     echo "ERROR: parsed empty client_id from JSON payload." >&2
