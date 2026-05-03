@@ -1102,7 +1102,9 @@ $oemr_ui = new OemrUI($arrOeUiSettings);
                         . http_build_query([
                             'pid' => $pid,
                             'purpose' => 'diagnostic_cross_check',
-                            'csrf_token' => \OpenEMR\Common\Csrf\CsrfUtils::collectCsrfToken(),
+                            'csrf_token' => \OpenEMR\Common\Csrf\CsrfUtils::collectCsrfToken(
+                                session: \OpenEMR\Common\Session\SessionWrapperFactory::getInstance()->getActiveSession()
+                            ),
                         ]);
             ?>
             <div class="d-flex align-items-center mb-2 px-1" style="gap: 10px;">

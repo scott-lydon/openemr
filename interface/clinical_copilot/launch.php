@@ -34,6 +34,7 @@ require_once __DIR__ . '/../globals.php';
 use OpenEMR\Common\Acl\AclMain;
 use OpenEMR\Common\Csrf\CsrfUtils;
 use OpenEMR\Common\Logging\SystemLogger;
+use OpenEMR\Common\Session\SessionWrapperFactory;
 use OpenEMR\Common\Uuid\UuidRegistry;
 use OpenEMR\ClinicalCoPilot\TaskTokenConfigurationError;
 use OpenEMR\ClinicalCoPilot\TaskTokenMinter;
@@ -71,7 +72,7 @@ if ($pid <= 0) {
     exit;
 }
 
-if (!CsrfUtils::verifyCsrfToken($csrfToken)) {
+if (!CsrfUtils::verifyCsrfToken($csrfToken, SessionWrapperFactory::getInstance()->getActiveSession())) {
     $logger->warning(
         'clinical_copilot.launch.csrf_failed',
         ['pid' => $pid, 'user_id' => $userId]

@@ -163,7 +163,9 @@ switch ($search_any_type) {
             // ────────────────────────────────────────────────────────────────
             $copilotBase = OEGlobalsBag::getInstance()->getString('clinical_copilot_url');
             if ($copilotBase !== '') :
-                $copilotCsrf = \OpenEMR\Common\Csrf\CsrfUtils::collectCsrfToken();
+                $copilotCsrf = \OpenEMR\Common\Csrf\CsrfUtils::collectCsrfToken(
+                    session: \OpenEMR\Common\Session\SessionWrapperFactory::getInstance()->getActiveSession()
+                );
             ?>
             <div class="btn-group btn-group-sm ml-2" role="group" aria-label="Clinical Co-Pilot">
                 <a class="btn btn-sm btn-primary"
