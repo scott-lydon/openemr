@@ -45,6 +45,16 @@ langgraph = [
 postgres = [
     "psycopg[binary]>=3.2.0",
     "pgvector>=0.3.6",
+    # Schema migration tool. Used for the agent_jobs queue table, the
+    # citations table, and every Week 2 schema change. Keeping migrations
+    # source-controlled is the only safe way to evolve the queue schema
+    # without re-running the data-loss-prone CREATE TABLE IF NOT EXISTS
+    # pattern.
+    "alembic>=1.14.0",
+    # SQLAlchemy is a transitive dep of alembic but we list it explicitly
+    # because the migration env.py imports it directly. Pinning here keeps
+    # the upgrade path predictable when alembic relaxes its lower bound.
+    "sqlalchemy>=2.0.36",
 ]
 observability = [
     "opentelemetry-api>=1.27.0",

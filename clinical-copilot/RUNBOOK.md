@@ -86,6 +86,35 @@ docker compose exec postgres psql -U sidecar -d sidecar -c \
   "UPDATE agent_jobs SET state='queued', attempt_count=0, next_attempt_at=NOW() WHERE state='dead_letter' AND last_error->>'code' = '<the error code>';"
 ```
 
+### 2.3 Orphan DocumentReference (FHIR row exists, no queue row)
+
+**Symptom:** Grafana panel "FHIR docs without a job" reports a non-zero count, or a clinician reports a document is uploaded but never extracts.
+
+**Diagnosis:** the upload handler's FHIR DocumentReference create succeeded but the subsequent `agent_jobs` insert failed before commit. The handler raises `UploadQueueError` (HTTP 503) so the client knows the job did not start, but the FHIR resource was already persisted by OpenEMR and cannot be rolled back from the sidecar.
+
+**Fix:**
+
+```bash
+# 1. List orphans (DocumentReference rows with no corresponding agent_jobs row).
+docker compose exec mariadb mysql -uroot -proot openemr -e "
+  SELECT id, foreign_id AS patient_id, hash, created_at
+  FROM documents
+  WHERE id NOT IN (
+    SELECT document_id FROM (
+      SELECT DISTINCT document_id FROM agent_jobs
+    ) j
+  )
+  ORDER BY created_at DESC LIMIT 20;
+"
+```
+
+Then either:
+
+- **Backfill** by inserting a queued `agent_jobs` row pointing at the orphan document_id (preferred — clinical content is preserved).
+- **Delete** the orphan DocumentReference if the upload handler returned 503 to the client and the client retried (the client has a fresh document and the orphan is stale).
+
+The handler logs `upload_queue_insert_failed` with the document_id at WARN level whenever this happens, so a real-time alert can fire without waiting for the periodic Grafana scan.
+
 ---
 
 ## Phase 3 — VLM extraction

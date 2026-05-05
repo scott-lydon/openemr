@@ -113,9 +113,30 @@ check_py "openai"              "openai"              "pip install -e .[openai]"
 check_py "langgraph"           "langgraph"           "pip install -e .[langgraph]"
 check_py "psycopg"             "psycopg"             "pip install -e .[postgres]"
 check_py "pgvector (python)"   "pgvector"            "pip install -e .[postgres]"
+check_py "alembic"             "alembic"             "pip install -e .[postgres]"
+check_py "sqlalchemy"          "sqlalchemy"          "pip install -e .[postgres]"
 check_py "opentelemetry"       "opentelemetry"       "pip install -e .[observability]"
 check_py "hypothesis"          "hypothesis"          "pip install -e .[w2_test]"
 check_py "bandit"              "bandit"              "pip install -e .[w2_test]"
+
+# ----------------------------------------------------------------------------
+heading "Phase 2 schema migrations"
+
+DB_URL_FOR_CHECK="${COPILOT_DATABASE_URL:-${DATABASE_URL:-}}"
+if [ -n "$DB_URL_FOR_CHECK" ] && command -v psql >/dev/null 2>&1; then
+  if psql "$DB_URL_FOR_CHECK" -tAc "SELECT to_regclass('public.agent_jobs');" 2>/dev/null | grep -q agent_jobs; then
+    ok "agent_jobs table"
+  else
+    fail "agent_jobs table" "cd clinical-copilot && alembic upgrade head (with COPILOT_DATABASE_URL set)"
+  fi
+  if psql "$DB_URL_FOR_CHECK" -tAc "SELECT to_regclass('public.citations');" 2>/dev/null | grep -q citations; then
+    ok "citations table"
+  else
+    fail "citations table" "cd clinical-copilot && alembic upgrade head (migration 0002 lands citations)"
+  fi
+else
+  warn "agent_jobs/citations tables" "DATABASE_URL/COPILOT_DATABASE_URL not set or psql missing; cannot verify"
+fi
 
 # ----------------------------------------------------------------------------
 heading "spaCy NLP model for Presidio (en_core_web_lg)"

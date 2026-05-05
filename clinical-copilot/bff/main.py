@@ -28,6 +28,7 @@ from .oauth import (
     make_pkce_pair,
 )
 from .policy import PolicyStore
+from .routes import documents as documents_routes
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,9 @@ def create_app() -> FastAPI:
                 "exp": claims.expires_at,
             },
         }
+
+    # Week 2 documents endpoint and dev-mint helper.
+    app.include_router(documents_routes.router)
 
     return app
 
