@@ -13,6 +13,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from sidecar.api.chat import router as chat_router
+from sidecar.api.citations import (
+    get_citations_connection,
+    get_pdf_source_for_citation,
+    router as citations_router,
+)
 from sidecar.api.documents import (
     get_fhir_client,
     get_queue_connection,
@@ -66,7 +71,9 @@ def create_app() -> FastAPI:
     )
     app.include_router(chat_router)
     app.include_router(documents_router)
+    app.include_router(citations_router)
     _wire_ingest_dependencies(app, settings)
+    _wire_citations_dependencies(app, settings)
     app.state.settings = settings
     return app
 
@@ -107,6 +114,32 @@ def _wire_ingest_dependencies(app: FastAPI, settings: object) -> None:
             yield conn
 
     app.dependency_overrides[get_queue_connection] = _queue_connection
+
+
+def _wire_citations_dependencies(app: FastAPI, settings: object) -> None:
+    """Bind production implementations for the citations preview seams."""
+
+    def _citations_connection():
+        with open_connection(getattr(settings, "database_url", None)) as conn:
+            yield conn
+
+    app.dependency_overrides[get_citations_connection] = _citations_connection
+
+    async def _pdf_source(_document_id: str) -> bytes:
+        # Production wiring fetches the sanitized bytes back from the
+        # OpenEMR FHIR DocumentReference. Until Phase 3's persistence
+        # path is fully wired with the OAuth token cache, the seam
+        # raises NotImplementedError so the preview endpoint surfaces
+        # the gap explicitly rather than silently returning an empty
+        # page.
+        raise NotImplementedError(
+            "PDF source for citations preview is not wired in this build. "
+            "Phase 3's FHIR client cache lands here in a follow-up commit. "
+            "For unit and integration tests, override "
+            "get_pdf_source_for_citation in app.dependency_overrides."
+        )
+
+    app.dependency_overrides[get_pdf_source_for_citation] = lambda: _pdf_source
 
 
 app = create_app()
