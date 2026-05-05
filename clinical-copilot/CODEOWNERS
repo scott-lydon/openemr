@@ -1,0 +1,30 @@
+# CODEOWNERS for clinical-copilot
+#
+# When a Pull Request touches a path, the listed owner is automatically
+# requested as a reviewer. The owner has the final say on architecture
+# decisions in their tree.
+#
+# Format: <path-pattern> <space-separated GitHub handles>
+
+# Default owner for everything in this subtree.
+*                                    @scott-lydon
+
+# Sidecar internals.
+/sidecar/agents/                     @scott-lydon
+/sidecar/schemas/w2/                 @scott-lydon
+/sidecar/rag/                        @scott-lydon
+/sidecar/ingest/                     @scott-lydon
+/sidecar/sanitize/                   @scott-lydon
+/sidecar/observability/              @scott-lydon
+
+# Eval suite. Every Pull Request that touches the eval cases needs an
+# explicit review because the cases anchor the regression gate.
+/evals/golden_w2/                    @scott-lydon
+
+# Architecture and security docs require explicit review.
+/W2_ARCHITECTURE.md                  @scott-lydon
+/SECURITY.md                         @scott-lydon
+/RUNBOOK.md                          @scott-lydon
+
+# Continuous Integration (CI) workflows.
+/.github/workflows/w2-eval-gate.yml  @scott-lydon
