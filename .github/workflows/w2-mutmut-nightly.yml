@@ -1,0 +1,82 @@
+name: w2-mutmut-nightly
+
+# Nightly mutation testing for the Week 2 sidecar tree.
+#
+# Why mutmut runs nightly rather than per-PR:
+#
+# - One mutation run takes 20-40 minutes on the sidecar tree; that
+#   exceeds a healthy PR-blocking budget.
+# - Mutations that survive in a nightly run open follow-up issues, not
+#   blockers, so a teammate can pick them up the next morning.
+# - Per-PR mutation testing was a frequent source of false positives
+#   in early iteration. Nightly cadence catches the same regressions
+#   without the noise.
+#
+# The job runs against the same sanitization, schemas, and agent code
+# the eval suite covers; surviving mutations indicate a test-coverage
+# gap.
+
+on:
+  schedule:
+    - cron: "0 7 * * *"  # 07:00 UTC daily
+  workflow_dispatch: {}
+
+defaults:
+  run:
+    working-directory: clinical-copilot
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[w2,dev,openai,langgraph,postgres,observability,phi]"
+
+      - name: Mutmut run
+        run: |
+          mutmut run \
+            --paths-to-mutate "sidecar/agents/w2,sidecar/sanitize,sidecar/schemas/w2,sidecar/citations,sidecar/rag" \
+            --runner "pytest -x -q tests/sidecar/w2 tests/repo" \
+            || true
+
+      - name: Mutmut results
+        run: mutmut results | tee mutmut-results.txt
+
+      - name: Upload mutmut report
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutmut-report
+          path: |
+            clinical-copilot/mutmut-results.txt
+            clinical-copilot/.mutmut-cache
+          retention-days: 14
+
+      - name: Open issue when mutations survive
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'clinical-copilot/mutmut-results.txt';
+            if (!fs.existsSync(path)) return;
+            const text = fs.readFileSync(path, 'utf8');
+            const surviving = (text.match(/Survived/gi) || []).length;
+            if (surviving === 0) return;
+            const today = new Date().toISOString().slice(0, 10);
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `mutmut: ${surviving} surviving mutation(s) on ${today}`,
+              body: 'Nightly mutmut run surfaced surviving mutations.\n\n' +
+                'Pull the artifact from the workflow run for the full list.',
+              labels: ['mutation-testing', 'nightly'],
+            });
