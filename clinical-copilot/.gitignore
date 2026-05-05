@@ -21,3 +21,6 @@ build/
 node_modules/
 evals/results/*.json
 !evals/results/.gitkeep
+# regress_self_test.py backup files (sandbox sometimes leaves them)
+*.self_test_backup
+*.self_test_backup.removed
