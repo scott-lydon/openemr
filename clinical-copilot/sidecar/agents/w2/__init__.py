@@ -14,12 +14,45 @@ Modules:
   render → extract → persist.
 """
 
+from sidecar.agents.w2.evidence_packet_builder import build_evidence_packet
 from sidecar.agents.w2.extract_dispatcher import (
     DocumentSource,
     DocumentSourceError,
     StubDocumentSource,
     UnsupportedDocTypeError,
     build_extract_fn,
+)
+from sidecar.agents.w2.graph import (
+    EvidenceRetrieverNode,
+    GraphNodes,
+    GraphResult,
+    IntakeExtractorNode,
+    PairwiseComparerNode,
+    run_graph,
+)
+from sidecar.agents.w2.response_formatter import format_response
+from sidecar.agents.w2.state import (
+    ClinicalClaim,
+    DecisionPath,
+    GraphState,
+    IntentKind,
+    ResponsePacket,
+    WorkerName,
+)
+from sidecar.agents.w2.supervisor import (
+    SUPERVISOR_JUDGE_PROMPT_VERSION,
+    StubSupervisorJudge,
+    SupervisorDecision,
+    SupervisorJudge,
+    preflight,
+    supervise,
+)
+from sidecar.agents.w2.verifier import (
+    CitationResolver,
+    PresidioUnavailable,
+    StubCitationResolver,
+    VerifierConfig,
+    verify,
 )
 from sidecar.agents.w2.intake_extractor import (
     INTAKE_EXTRACT_PROMPT_VERSION,
@@ -43,8 +76,33 @@ from sidecar.agents.w2.vlm_client import (
 )
 
 __all__ = [
+    "CitationResolver",
+    "ClinicalClaim",
+    "DecisionPath",
     "DocumentSource",
     "DocumentSourceError",
+    "EvidenceRetrieverNode",
+    "GraphNodes",
+    "GraphResult",
+    "GraphState",
+    "IntakeExtractorNode",
+    "IntentKind",
+    "PairwiseComparerNode",
+    "PresidioUnavailable",
+    "ResponsePacket",
+    "SUPERVISOR_JUDGE_PROMPT_VERSION",
+    "StubCitationResolver",
+    "StubSupervisorJudge",
+    "SupervisorDecision",
+    "SupervisorJudge",
+    "VerifierConfig",
+    "WorkerName",
+    "build_evidence_packet",
+    "format_response",
+    "preflight",
+    "run_graph",
+    "supervise",
+    "verify",
     "INTAKE_EXTRACT_PROMPT_VERSION",
     "INTAKE_VERIFY_PROMPT_VERSION",
     "IntakeExtractionFailed",
