@@ -1,11 +1,23 @@
 """Sidecar entry point.
 
 Starts the FastAPI app on the configured port and wires observability.
+
+Background workers:
+
+- The ingest worker runs as an asyncio task spawned in the FastAPI
+  lifespan. It leases jobs from the Postgres queue, fetches the
+  source PDF from the FHIR DocumentReference, runs the VLM
+  extractor, and persists the extracted Observations / Medications /
+  Allergies back to OpenEMR's FHIR API. See ``_start_ingest_worker``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 import structlog
 import uvicorn
@@ -32,6 +44,9 @@ from sidecar.ingest.virus_scan import default_scanner
 from sidecar.observability import init_observability
 
 
+_logger = logging.getLogger(__name__)
+
+
 def _configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     structlog.configure(
@@ -44,6 +59,237 @@ def _configure_logging() -> None:
     )
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """FastAPI lifespan: start/stop the ingest worker background task.
+
+    The worker runs forever leasing one job at a time. We capture its
+    asyncio.Task so shutdown can cancel it cleanly. If the worker crashes
+    the wrapper logs and respawns with backoff so a transient Postgres
+    blip cannot wedge the queue.
+
+    Disable at runtime by setting ``COPILOT_DISABLE_INGEST_WORKER=true``
+    (set in tests where the worker would compete with fixture state, or
+    on the BFF-only deployment that doesn't talk to FHIR directly).
+    """
+    settings = app.state.settings
+    if os.environ.get("COPILOT_DISABLE_INGEST_WORKER", "").lower() == "true":
+        _logger.info(
+            "ingest_worker_disabled COPILOT_DISABLE_INGEST_WORKER=true; "
+            "uploaded PDFs will queue but never extract."
+        )
+        yield
+        return
+
+    stop_event = asyncio.Event()
+    worker_task = asyncio.create_task(
+        _run_ingest_worker_supervisor(settings, stop_event),
+        name="ingest-worker-supervisor",
+    )
+    app.state.ingest_worker_task = worker_task
+    app.state.ingest_worker_stop = stop_event
+    try:
+        yield
+    finally:
+        _logger.info("ingest_worker_shutdown_signal_sent")
+        stop_event.set()
+        try:
+            await asyncio.wait_for(worker_task, timeout=15.0)
+        except asyncio.TimeoutError:
+            _logger.warning(
+                "ingest_worker_did_not_stop_in_15s; cancelling forcibly."
+            )
+            worker_task.cancel()
+            try:
+                await worker_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+async def _run_ingest_worker_supervisor(
+    settings: object, stop_event: asyncio.Event
+) -> None:
+    """Run the ingest worker, restarting on transient errors.
+
+    Wraps ``run_worker_loop`` so any unhandled exception is logged with
+    full traceback and the loop restarts after a backoff. The supervisor
+    only exits when ``stop_event`` is set, so a SIGTERM from the
+    container runtime cleanly terminates both the supervisor and the
+    inner worker.
+    """
+    backoff_seconds = 5.0
+    max_backoff = 300.0
+    while not stop_event.is_set():
+        try:
+            await _run_ingest_worker_once(settings, stop_event)
+            # Clean exit means stop_event fired: leave the supervisor.
+            return
+        except Exception:
+            # ``exc_info=True`` captures the full chain in the launcher
+            # log so a "lab PDFs not appearing" report is one logfile
+            # search away from the root cause.
+            _logger.exception(
+                "ingest_worker_crashed; restarting in %.1fs", backoff_seconds,
+            )
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=backoff_seconds)
+                return  # stop_event fired during backoff
+            except asyncio.TimeoutError:
+                pass
+            backoff_seconds = min(backoff_seconds * 2, max_backoff)
+
+
+async def _run_ingest_worker_once(
+    settings: object, stop_event: asyncio.Event
+) -> None:
+    """One run of the ingest loop. Returns when ``stop_event`` is set.
+
+    Builds the dispatcher seams from production implementations:
+
+    - **DocumentSource** = FHIR DocumentReference reader (token-aware).
+    - **VlmClient** = OpenAIVlmClient with vision-enabled chat completions
+      (or StubVlmClient when COPILOT_ALLOW_MOCK=true).
+    - **FhirPersistClient** = HttpxFhirPersistClient writing transaction
+      bundles back to OpenEMR.
+
+    Token freshness:
+
+    The clients receive a fresh OAuth2 access token per iteration. We do
+    not call ``run_worker_loop`` (which freezes the token at startup)
+    because SMART Backend Services tokens expire — usually in 1 hour —
+    and the worker is meant to run for days. Instead we inline the loop
+    so we can mint a token from ``OpenEMRTokenCache.get()`` (which
+    returns the cached token until ~30s before expiry) on every lease
+    attempt.
+    """
+    from sidecar.agents.w2.extract_dispatcher import build_extract_fn
+    from sidecar.agents.w2.vlm_client import StubVlmClient
+    from sidecar.ingest.errors import UploadQueueError
+    from sidecar.ingest.fhir_document_source import FhirDocumentSource
+    from sidecar.ingest.persist import HttpxFhirPersistClient
+    from sidecar.ingest.worker import DEFAULT_POLL_SECONDS, run_one_iteration
+    from sidecar.openemr_oauth import (
+        OpenEMRConfigurationError,
+        OpenEMRTokenCache,
+        OpenEMRTokenError,
+    )
+
+    fhir_base = getattr(settings, "openemr_fhir_base", "") or ""
+    verify_ssl = bool(getattr(settings, "fhir_verify_ssl", False))
+    db_url = getattr(settings, "database_url", None)
+    allow_mock = os.environ.get("COPILOT_ALLOW_MOCK", "").lower() == "true"
+
+    if not fhir_base:
+        raise RuntimeError(
+            "ingest worker requires COPILOT_OPENEMR_FHIR_BASE to be set; "
+            "without a FHIR base URL the worker cannot fetch "
+            "DocumentReference bytes. Either set the env var or set "
+            "COPILOT_DISABLE_INGEST_WORKER=true on a deployment that does "
+            "not talk to FHIR."
+        )
+    if not db_url:
+        raise RuntimeError(
+            "ingest worker requires COPILOT_DATABASE_URL to be set; without "
+            "a Postgres connection string there is no queue to lease from."
+        )
+
+    # SMART Backend Services token cache. Construction validates the
+    # config (client id, private key path) and raises
+    # OpenEMRConfigurationError if anything is missing — surfaced here
+    # rather than on the first lease so the operator sees the problem
+    # at boot.
+    try:
+        token_cache = OpenEMRTokenCache(settings)  # type: ignore[arg-type]
+    except OpenEMRConfigurationError as exc:
+        raise RuntimeError(
+            "ingest worker cannot start: OpenEMR OAuth client is "
+            f"misconfigured. {exc}. Either run setup-openemr-client.sh to "
+            "register the sidecar with OpenEMR's oauth_clients table, or "
+            "set COPILOT_DISABLE_INGEST_WORKER=true on a deployment that "
+            "does not talk to FHIR."
+        ) from exc
+
+    # VLM client selection: production uses OpenAI vision; mock-mode
+    # uses an empty StubVlmClient that returns a deterministic empty
+    # extraction so the worker still completes the job (state -> `done`)
+    # without inventing values.
+    vlm_client: object
+    if allow_mock:
+        vlm_client = StubVlmClient(model_id="stub-vlm-mockmode")
+        _logger.info(
+            "ingest_worker_vlm=stub COPILOT_ALLOW_MOCK=true; extractions "
+            "will be empty until a real VLM is wired."
+        )
+    else:
+        from sidecar.agents.w2.openai_vlm_client import OpenAIVlmClient
+        vlm_client = OpenAIVlmClient(settings)  # type: ignore[arg-type]
+
+    poll_seconds = DEFAULT_POLL_SECONDS
+
+    with open_connection(db_url) as conn:
+        _logger.info(
+            "ingest_worker_started fhir_base=%s allow_mock=%s "
+            "poll_seconds=%.1f",
+            fhir_base, allow_mock, poll_seconds,
+        )
+        while not stop_event.is_set():
+            try:
+                token = await token_cache.get()
+            except OpenEMRTokenError as exc:
+                _logger.warning(
+                    "ingest_worker_token_mint_failed endpoint=%s status=%s "
+                    "msg=%s; backing off %.1fs",
+                    exc.endpoint, exc.status, exc, poll_seconds * 5,
+                )
+                try:
+                    await asyncio.wait_for(
+                        stop_event.wait(), timeout=poll_seconds * 5,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                continue
+
+            document_source = FhirDocumentSource(
+                fhir_base=fhir_base,
+                access_token=token,
+                verify_ssl=verify_ssl,
+            )
+            persist_client = HttpxFhirPersistClient(
+                fhir_base=fhir_base,
+                access_token=token,
+                verify_ssl=verify_ssl,
+            )
+            extract_fn = build_extract_fn(
+                document_source=document_source,
+                vlm_client=vlm_client,  # type: ignore[arg-type]
+                persist_client=persist_client,
+            )
+
+            try:
+                ran = await run_one_iteration(conn=conn, extract_fn=extract_fn)
+            except UploadQueueError:
+                _logger.warning(
+                    "ingest_worker_queue_error; backing off %.1fs",
+                    poll_seconds * 5,
+                )
+                try:
+                    await asyncio.wait_for(
+                        stop_event.wait(), timeout=poll_seconds * 5,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                continue
+
+            if not ran:
+                # No work available — sleep a beat before polling again.
+                try:
+                    await asyncio.wait_for(
+                        stop_event.wait(), timeout=poll_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+
+
 def create_app() -> FastAPI:
     _configure_logging()
     settings = get_settings()
@@ -52,6 +298,7 @@ def create_app() -> FastAPI:
         title="Clinical Co-Pilot Sidecar",
         version="0.1.0",
         description="Pairwise comparison engine + verifier + audit log.",
+        lifespan=_lifespan,
     )
     # CORS: the chat UI is served by this same origin (GET /), so it
     # never needs CORS for its own /chat calls. We allow the configured
