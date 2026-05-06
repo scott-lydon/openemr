@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -31,6 +32,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from sidecar.agent.conversation import (
+    ConversationMemory,
+    ConversationTurn,
+    get_default_memory,
+)
 from sidecar.agents.w2 import (
     ClinicalClaim,
     GraphNodes,
@@ -39,7 +45,15 @@ from sidecar.agents.w2 import (
     VerifierConfig,
     run_graph,
 )
+from sidecar.agents.w2.state import IntentKind
+from sidecar.agents.w2.synthesizer import (
+    SynthesizerError,
+    SynthesizerInputs,
+    render_synthesized_response,
+    synthesize,
+)
 from sidecar.auth import TaskTokenClaims, require_task_token
+from sidecar.config import get_settings
 from sidecar.rag.types import EvidenceSnippet, RetrievalMethod
 
 
@@ -60,6 +74,13 @@ class W2ChatRequest(BaseModel):
     patient_id: str = Field(min_length=1, max_length=128)
     user_question: str = Field(min_length=1, max_length=4000)
     attached_document_ids: list[str] = Field(default_factory=list)
+    # Optional explicit session id. When omitted the chat uses the
+    # token's user_id + patient_id pair as a stable per-session key, so
+    # follow-up turns from the same browser tab inherit the prior
+    # turns automatically. When the chat UI later supports multiple
+    # parallel sessions per patient, the front-end can pass an explicit
+    # ``session_id``.
+    session_id: str | None = Field(default=None, max_length=128)
 
 
 class W2ChatResponse(BaseModel):
@@ -85,7 +106,25 @@ async def post_w2_chat(
     body: W2ChatRequest,
     claims: Annotated[TaskTokenClaims, Depends(require_task_token)],
 ) -> W2ChatResponse:
-    """Run the Week 2 graph for one freeform-chat turn."""
+    """Run the Week 2 graph for one freeform-chat turn.
+
+    Pipeline:
+
+    1. Run the graph (supervisor → workers → packet builder → verifier).
+    2. If the verifier produced any verified claims, run them through
+       the LLM synthesizer with the user's question + prior conversation
+       turns. The synthesizer produces natural-language prose that
+       answers the actual question rather than dumping every claim
+       verbatim.
+    3. Materialize citation rows in Postgres so the chat UI can deep-link
+       each chip to its preview / source.
+    4. Record the user + assistant turn into ``ConversationMemory`` so
+       the next turn's synthesizer call sees the prior context.
+
+    The synthesizer is wrapped in a try/except: any failure falls back
+    to the dumb formatter so the chat keeps working. The failure is
+    logged with category + hint for the operator runbook.
+    """
     if claims.patient_id != body.patient_id:
         raise HTTPException(
             status_code=403,
@@ -97,6 +136,17 @@ async def post_w2_chat(
                 ),
             },
         )
+
+    # Stable per-(user, patient) session key when the front-end did not
+    # pass one. Same shape as the W1 chat. Multi-tab support arrives
+    # when the UI starts passing distinct ids.
+    session_id = body.session_id or f"w2:{claims.user_id}:{body.patient_id}"
+    conv_memory = get_default_memory()
+    prior_turns = conv_memory.turns(
+        user_id=claims.user_id,
+        patient_id=body.patient_id,
+        session_id=session_id,
+    )
 
     state = GraphState(
         encounter_id="demo-encounter",
@@ -116,19 +166,107 @@ async def post_w2_chat(
     )
 
     response = result.state.response
+    rendered_text = result.rendered_text
+    synth_attributes: dict[str, object] = {}
+
+    # Synthesizer pass. Only fires when the verifier produced at least
+    # one surviving claim (so we have something to synthesize over) AND
+    # the response is not already a refusal. Refusals go straight to
+    # the formatter because the synthesizer would just paraphrase the
+    # refusal reason.
+    if response is not None and response.claims and not response.refusal_reason:
+        try:
+            answer = await synthesize(
+                SynthesizerInputs(
+                    user_question=body.user_question,
+                    prior_turns=tuple(prior_turns),
+                    response=response,
+                    snippets=tuple(result.state.snippets),
+                ),
+                settings=get_settings(),
+            )
+            rendered_text = render_synthesized_response(answer, response)
+            synth_attributes = {
+                "synthesizer.verdict": answer.verdict,
+                "synthesizer.cited_indices_count": len(answer.cited_indices),
+                "synthesizer.data_gaps_count": len(answer.data_gaps),
+                "synthesizer.prior_turn_count": len(prior_turns),
+            }
+        except SynthesizerError as exc:
+            # Typed failure: we know exactly which step broke. Log with
+            # the category code so the dashboard can panel "synthesizer
+            # failures by category" and the chat keeps working using
+            # the dumb formatter's output.
+            logger.warning(
+                "w2_synthesizer_failed code=%s msg=%s; falling back to "
+                "format_response output.",
+                exc.code, exc,
+            )
+            synth_attributes = {
+                "synthesizer.error_code": exc.code,
+                "synthesizer.error_message": str(exc)[:200],
+                "synthesizer.fallback": "format_response",
+            }
+        except Exception as exc:  # noqa: BLE001 — defensive; never break chat
+            logger.exception("w2_synthesizer_unexpected_error")
+            synth_attributes = {
+                "synthesizer.error_code": "synthesizer_unexpected",
+                "synthesizer.error_message": f"{type(exc).__name__}: {exc!s}"[:200],
+                "synthesizer.fallback": "format_response",
+            }
+
     citation_links = _materialize_citations(
         response=response,
         encounter_id=state.encounter_id,
         patient_id=state.patient_id,
     )
+
+    # Record the turn so a subsequent question inherits context.
+    # Assistant turn carries the verdict + at most one short headline so
+    # no PHI leaks into the conversation buffer.
+    if body.user_question.strip():
+        now = time.time()
+        purpose_label = (
+            claims.authorized_purposes[0] if claims.authorized_purposes
+            else "follow_up_question"
+        )
+        conv_memory.record(
+            user_id=claims.user_id,
+            patient_id=body.patient_id,
+            session_id=session_id,
+            turn=ConversationTurn(
+                role="user",
+                content=body.user_question.strip()[:500],
+                ts_unix=now,
+                purpose=purpose_label,
+            ),
+        )
+        verdict_label = str(synth_attributes.get("synthesizer.verdict", ""))
+        if not verdict_label and response is not None:
+            verdict_label = (
+                "refused" if response.refusal_reason else
+                ("answered" if response.claims else "no_claims")
+            )
+        conv_memory.record(
+            user_id=claims.user_id,
+            patient_id=body.patient_id,
+            session_id=session_id,
+            turn=ConversationTurn(
+                role="assistant",
+                content=verdict_label or "no_verdict",
+                ts_unix=now,
+                purpose=purpose_label,
+            ),
+        )
+
     return W2ChatResponse(
-        rendered_text=result.rendered_text,
+        rendered_text=rendered_text,
         decision_path=result.state.decision_path.value,
         intent_kind=result.state.intent_kind.value,
         worker_sequence=[w.value for w in result.state.worker_sequence],
         refused=bool(response and response.refusal_reason),
         citation_links=citation_links,
-        span_attributes=dict(result.state.span_attributes),
+        span_attributes={**dict(result.state.span_attributes), **synth_attributes},
     )
 
 
@@ -174,6 +312,54 @@ def _build_nodes(*, allow_mock: bool) -> GraphNodes:
     """
 
     async def real_evidence_retriever(state: GraphState) -> list[EvidenceSnippet]:
+        # Chart-review intent reads from the patient SNAPSHOT (FHIR),
+        # not the guideline corpus. The supervisor routed this question
+        # to chart_review because it asks about *this patient's* facts
+        # (diseases, meds, allergies) — facts that don't live in the
+        # ADA/USPSTF/ACR corpus. We fetch the snapshot via the same
+        # OAuth-authed FHIR client the W1 /chat endpoint uses, then
+        # translate each finding into an EvidenceSnippet so the rest of
+        # the W2 chain (packet builder → verifier → formatter) can
+        # process it uniformly with corpus snippets.
+        if state.intent_kind is IntentKind.CHART_REVIEW:
+            try:
+                # Reuse W1's snapshot-fetch helper (private but
+                # in-package; extracting to a shared module is a
+                # follow-up clean-up).
+                from sidecar.api.chat import _snapshot_from_openemr
+                snap = await _snapshot_from_openemr(state.patient_id)
+                snippets: list[EvidenceSnippet] = []
+                for label, prov, kind, _orig in snap.all_findings():
+                    # Synthetic chunk_id namespaced "chart:" so the
+                    # citation resolver can recognise (and the
+                    # citations table never needs a row for these —
+                    # their provenance is the FHIR resource itself).
+                    chunk_id = f"chart:{prov.table}:{prov.row_id}:{kind}"
+                    snippets.append(
+                        EvidenceSnippet(
+                            chunk_id=chunk_id,
+                            source_id="openemr-chart",
+                            section=kind,
+                            anchor_url=f"openemr://{prov.table}/{prov.row_id}",
+                            text=label,
+                            relevance_score=1.0,
+                            retrieval_method=RetrievalMethod.BM25,
+                            domain_tags=[],
+                        )
+                    )
+                # Cap so a patient with hundreds of findings doesn't
+                # overwhelm the response. The limit matches the corpus
+                # retriever's k=5 doubled to allow for richer chart
+                # narratives without becoming a full chart dump.
+                return snippets[:20]
+            except Exception as exc:
+                logger.warning(
+                    "chart_review snapshot fetch failed: %s; "
+                    "falling back to empty snippets.",
+                    exc,
+                )
+                return []
+
         # Lazy imports keep the route loadable when optional deps are
         # missing. The fall-throughs return [] so the chat keeps working.
         try:
@@ -307,6 +493,12 @@ def _build_nodes(*, allow_mock: bool) -> GraphNodes:
 
         def resolve(self, citation_id: str) -> bool:
             if citation_id.startswith("DocumentReference/"):
+                return True
+            # Chart-finding citations come from the patient snapshot,
+            # which was fetched via OAuth-authed FHIR — provenance is
+            # already trustworthy and lives in OpenEMR's own row, so
+            # we accept the synthetic id without a citations-table row.
+            if citation_id.startswith("chart:"):
                 return True
             self._ensure_loaded()
             if citation_id in self._cache:
