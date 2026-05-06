@@ -27,6 +27,7 @@ from sidecar.auth import TaskTokenClaims, require_task_token
 from sidecar.ingest import (
     DocType,
     IngestError,
+    JobState,
     UploadAuthError,
     UploadContext,
     UploadParameters,
