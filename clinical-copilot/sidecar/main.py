@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from sidecar.api.chat import router as chat_router
+from sidecar.api.chat_w2 import router as chat_w2_router
 from sidecar.api.citations import (
     get_citations_connection,
     get_pdf_source_for_citation,
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type"],
     )
     app.include_router(chat_router)
+    app.include_router(chat_w2_router)
     app.include_router(documents_router)
     app.include_router(citations_router)
     _wire_ingest_dependencies(app, settings)

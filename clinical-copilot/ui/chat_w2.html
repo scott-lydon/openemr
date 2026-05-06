@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clinical Co-Pilot — Week 2 Freeform Chat</title>
+<style>
+  :root {
+    --bg: #f3f6fa; --panel: #fff; --ink: #1f2933; --muted: #5b6573;
+    --primary: #0f3a5f; --accent: #1a78c2; --soft: #e8f1f9;
+    --warn-bg: #fff3cd; --warn-text: #856404;
+    --shadow: 0 1px 2px rgba(15,58,95,.04), 0 4px 12px rgba(15,58,95,.05);
+  }
+  *,*::before,*::after { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, Inter, "Segoe UI", Roboto, system-ui, sans-serif; }
+  header { background: var(--primary); color: #fff; padding: 14px 24px;
+    display: flex; align-items: center; gap: 12px; box-shadow: 0 2px 12px rgba(15,58,95,.18); }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  header .sub { font-size: 12px; opacity: .82; margin-left: 8px; }
+  .wrap { max-width: 920px; margin: 24px auto 96px; padding: 0 20px; }
+  .card { background: var(--panel); border-radius: 12px; box-shadow: var(--shadow);
+    padding: 18px 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 6px 0 4px; }
+  input, select, textarea { width: 100%; padding: 8px 10px; font: inherit;
+    border: 1px solid #d6d8db; border-radius: 8px; background: #fff; color: var(--ink); }
+  textarea { min-height: 100px; resize: vertical; }
+  button.primary { background: var(--accent); color: #fff; border: 0;
+    padding: 10px 18px; border-radius: 8px; font: inherit; font-weight: 500;
+    cursor: pointer; }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 12px; align-items: flex-end; }
+  .row > .grow { flex: 1; }
+  .dropzone { border: 2px dashed #c7d4dd; border-radius: 12px; padding: 22px;
+    text-align: center; color: var(--muted); transition: background .15s, border-color .15s; }
+  .dropzone.over { background: var(--soft); border-color: var(--accent); color: var(--accent); }
+  .dropzone input[type="file"] { display: none; }
+  .dropzone a.pick { color: var(--accent); cursor: pointer; }
+  .attached { margin-top: 10px; font-size: 13px; color: var(--ink); }
+  .attached .pill { background: var(--soft); color: var(--primary);
+    padding: 4px 10px; border-radius: 20px; display: inline-flex; align-items: center; gap: 6px;
+    margin-right: 6px; margin-top: 6px; font-size: 12px; }
+  .messages { display: flex; flex-direction: column; gap: 12px; }
+  .msg { padding: 12px 16px; border-radius: 12px; max-width: 86%; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; }
+  .msg.agent { align-self: flex-start; background: #fff; box-shadow: var(--shadow); white-space: pre-wrap; }
+  .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .chip { display: inline-block; background: var(--soft); color: var(--primary);
+    padding: 2px 8px; border-radius: 6px; font-size: 12px; margin-right: 4px; }
+  .warn { background: var(--warn-bg); color: var(--warn-text); padding: 10px 14px;
+    border-radius: 8px; margin-bottom: 12px; font-size: 13px; }
+  .err { color: #a73a35; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Clinical Co-Pilot — Week 2 Chat</h1>
+  <span class="sub" id="modeBadge">mock-mode</span>
+</header>
+
+<div class="wrap">
+
+  <div id="warning" class="warn" hidden></div>
+
+  <section class="card">
+    <h2>1. Pick a patient</h2>
+    <div class="row">
+      <div class="grow">
+        <label for="patient">Patient FHIR id</label>
+        <input id="patient" type="text" value="Patient/87413" />
+      </div>
+      <button id="mintBtn" class="primary">Mint dev token</button>
+    </div>
+    <div class="meta" id="tokenStatus">No token yet. Click "Mint dev token" — only available when COPILOT_ALLOW_MOCK=true.</div>
+  </section>
+
+  <section class="card">
+    <h2>2. Attach document(s) (optional)</h2>
+    <div id="dropzone" class="dropzone">
+      Drag a PDF here, or <a class="pick" id="pick">choose a file</a>.
+      <input id="fileInput" type="file" accept="application/pdf,image/png,image/jpeg,image/tiff" multiple />
+    </div>
+    <div class="attached" id="attachedList"></div>
+  </section>
+
+  <section class="card">
+    <h2>3. Ask the agent</h2>
+    <textarea id="question" placeholder="Example: Is her diabetes well controlled per ADA guidelines?"></textarea>
+    <div class="row" style="margin-top: 10px;">
+      <div class="grow"></div>
+      <button id="sendBtn" class="primary" disabled>Send</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Conversation</h2>
+    <div id="messages" class="messages"></div>
+  </section>
+</div>
+
+<script>
+const BFF_BASE = location.hostname === 'localhost' ? 'http://localhost:8800' : '';
+const SIDECAR_BASE = location.origin;
+
+let bearerToken = null;
+let attachedDocIds = [];
+
+const $ = (id) => document.getElementById(id);
+
+function setWarning(msg) {
+  if (!msg) { $('warning').hidden = true; return; }
+  $('warning').textContent = msg;
+  $('warning').hidden = false;
+}
+
+async function mintDevToken() {
+  const patient = $('patient').value.trim();
+  if (!patient) {
+    setWarning('Patient id is required.');
+    return;
+  }
+  setWarning('');
+  try {
+    const url = `${BFF_BASE}/dev/mint-token?patient=${encodeURIComponent(patient)}&purpose=diagnostic_cross_check`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`status ${resp.status}`);
+    const j = await resp.json();
+    bearerToken = j.token;
+    $('tokenStatus').innerHTML = `<span class="chip">token minted</span> patient=${patient}`;
+    $('sendBtn').disabled = false;
+  } catch (err) {
+    setWarning(`Could not mint token: ${err.message}. Confirm the BFF is on :8800 and COPILOT_ALLOW_MOCK=true is set.`);
+  }
+}
+
+async function uploadFile(file) {
+  if (!bearerToken) {
+    setWarning('Mint a token first.');
+    return null;
+  }
+  const patient = $('patient').value.trim();
+  const form = new FormData();
+  form.append('file', file);
+  form.append('doc_type', 'lab_pdf');
+  form.append('source', 'upload');
+  try {
+    const resp = await fetch(
+      `${SIDECAR_BASE}/agent-api/v1/patients/${encodeURIComponent(patient)}/documents`,
+      {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${bearerToken}` },
+        body: form,
+      }
+    );
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`status ${resp.status}: ${text.slice(0, 200)}`);
+    }
+    const j = await resp.json();
+    attachedDocIds.push(j.document_id);
+    return j;
+  } catch (err) {
+    setWarning(`Upload failed: ${err.message}`);
+    return null;
+  }
+}
+
+async function sendQuestion() {
+  if (!bearerToken) { setWarning('Mint a token first.'); return; }
+  const text = $('question').value.trim();
+  if (!text) return;
+  const patient = $('patient').value.trim();
+
+  appendMessage('user', text, '');
+  $('question').value = '';
+
+  try {
+    const resp = await fetch(`${SIDECAR_BASE}/agent-api/v1/w2-chat`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${bearerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        patient_id: patient,
+        user_question: text,
+        attached_document_ids: attachedDocIds,
+      }),
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`status ${resp.status}: ${body.slice(0, 300)}`);
+    }
+    const j = await resp.json();
+    const meta = `<span class="chip">intent: ${j.intent_kind}</span>` +
+                 `<span class="chip">decision: ${j.decision_path}</span>` +
+                 `<span class="chip">workers: ${j.worker_sequence.join(' → ')}</span>` +
+                 (j.refused ? '<span class="chip" style="background:#f7d6d6;color:#a73a35;">refused</span>' : '');
+    appendMessage('agent', j.rendered_text, meta);
+  } catch (err) {
+    appendMessage('agent', `Error: ${err.message}`, '<span class="chip err">error</span>');
+  }
+}
+
+function appendMessage(role, text, metaHtml) {
+  const wrap = document.createElement('div');
+  wrap.className = `msg ${role}`;
+  wrap.textContent = text;
+  $('messages').appendChild(wrap);
+  if (metaHtml) {
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.style.alignSelf = role === 'user' ? 'flex-end' : 'flex-start';
+    meta.innerHTML = metaHtml;
+    $('messages').appendChild(meta);
+  }
+  $('messages').scrollIntoView({ block: 'end' });
+}
+
+function renderAttached() {
+  const el = $('attachedList');
+  if (!attachedDocIds.length) { el.textContent = ''; return; }
+  el.innerHTML = '<strong>Attached:</strong> ' +
+    attachedDocIds.map(id => `<span class="pill">${id}</span>`).join('');
+}
+
+// Wire events
+$('mintBtn').addEventListener('click', mintDevToken);
+$('sendBtn').addEventListener('click', sendQuestion);
+$('question').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendQuestion(); }
+});
+$('pick').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', async (e) => {
+  for (const f of e.target.files) {
+    const r = await uploadFile(f);
+    if (r) renderAttached();
+  }
+  e.target.value = '';
+});
+const dz = $('dropzone');
+['dragover', 'dragenter'].forEach(ev =>
+  dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev =>
+  dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('over'); }));
+dz.addEventListener('drop', async (e) => {
+  for (const f of e.dataTransfer.files) {
+    const r = await uploadFile(f);
+    if (r) renderAttached();
+  }
+});
+</script>
+</body>
+</html>
