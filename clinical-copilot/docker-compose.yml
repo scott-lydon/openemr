@@ -33,6 +33,15 @@ services:
       - .env
     environment:
       COPILOT_DATABASE_URL: postgresql+psycopg://copilot:copilot@postgres:5432/copilot
+    volumes:
+      # SMART Backend Services keypair. The sidecar's
+      # OpenEMRTokenCache signs JWT-bearer client assertions with
+      # the private RSA key at /app/.keys/openemr-jwt-bearer.pem
+      # (the path COPILOT_OPENEMR_PRIVATE_KEY_PATH points at).
+      # setup-openemr-client.sh writes the key + JWKS pair to
+      # ./.keys/ on the host. Read-only because the sidecar only
+      # signs with it, never rewrites it.
+      - ./.keys:/app/.keys:ro
     ports:
       - "8801:8801"
     depends_on:
