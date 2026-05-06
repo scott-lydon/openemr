@@ -20,6 +20,7 @@ fails closed instead of silently serving synthetic data.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -27,6 +28,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from sidecar.agent.conversation import (
+    ConversationMemory,
+    ConversationTurn,
+    get_default_memory,
+)
+from sidecar.agent.follow_up import FollowUpConfig, run_follow_up
 from sidecar.agent.graph import GraphConfig, run_graph
 from sidecar.audit import InMemoryAuditLog
 from sidecar.auth import TaskTokenClaims, require_task_token
@@ -38,10 +45,12 @@ from sidecar.openemr_oauth import (
 )
 from sidecar.snapshot import (
     PatientSnapshot,
+    Presenting,
     SnapshotService,
     build_snapshot_from_fixture,
 )
 from sidecar.snapshot.fhir_client import FhirClient
+from sidecar.snapshot.shard_selection import ShardSelection, select_shards
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +100,16 @@ def _get_token_cache() -> OpenEMRTokenCache:
     return _TOKEN_CACHE
 
 
-async def _snapshot_from_openemr(patient_id: str) -> PatientSnapshot:
-    """Fetch a snapshot from OpenEMR's FHIR R4 surface."""
+async def _snapshot_from_openemr(
+    patient_id: str, *, shards: ShardSelection | None = None
+) -> PatientSnapshot:
+    """Fetch a snapshot from OpenEMR's FHIR R4 surface.
+
+    ``shards`` controls which FHIR resource shards are pulled. When
+    ``None``, the legacy default fan-out (every shard) is used. The
+    chat handler computes the right selection per request and passes
+    it through.
+    """
     settings = get_settings()
     cache = _get_token_cache()
     try:
@@ -119,10 +136,15 @@ async def _snapshot_from_openemr(patient_id: str) -> PatientSnapshot:
             },
         )
     async with FhirClient(settings, token) as client:
-        return await SnapshotService(client).build(uuid)
+        return await SnapshotService(client).build(uuid, shards=shards)
 
 
-async def _snapshot_for(patient_id: str, *, claims: TaskTokenClaims) -> PatientSnapshot:
+async def _snapshot_for(
+    patient_id: str,
+    *,
+    claims: TaskTokenClaims,
+    shards: ShardSelection | None = None,
+) -> PatientSnapshot:
     """Resolve a snapshot, enforcing patient-id binding from the token.
 
     Production path: call OpenEMR FHIR via :func:`_snapshot_from_openemr`.
@@ -130,6 +152,11 @@ async def _snapshot_for(patient_id: str, *, claims: TaskTokenClaims) -> PatientS
     bundled fixture if one matches the requested patient id, else still
     call OpenEMR. Either way, the requested patient id MUST equal the
     patient id bound into the task token.
+
+    ``shards`` is honoured on the live OpenEMR path. The fixture path
+    ignores it because the bundled JSON already contains every
+    shard's worth of data (selective retrieval is a network-cost
+    optimisation, not a privacy boundary).
     """
     if patient_id != claims.patient_id:
         raise HTTPException(
@@ -147,7 +174,7 @@ async def _snapshot_for(patient_id: str, *, claims: TaskTokenClaims) -> PatientS
         _load_fixtures()
         if patient_id in _FIXTURE_BY_PATIENT_ID:
             return build_snapshot_from_fixture(_FIXTURE_BY_PATIENT_ID[patient_id])
-    return await _snapshot_from_openemr(patient_id)
+    return await _snapshot_from_openemr(patient_id, shards=shards)
 
 
 class ChatRequest(BaseModel):
@@ -155,8 +182,23 @@ class ChatRequest(BaseModel):
     purpose: Literal["diagnostic_cross_check", "chart_error_scan", "follow_up_question"]
     message: str | None = Field(
         default=None,
-        description="Optional follow-up message text. The first turn for "
-        "diagnostic_cross_check or chart_error_scan does not need a message.",
+        description=(
+            "Clinician's message text. Required for purpose='follow_up_question'. "
+            "For 'diagnostic_cross_check' and 'chart_error_scan' the message is "
+            "optional; if provided, it is treated as a presenting-symptom "
+            "override and drives the pairwise comparator's prompt."
+        ),
+    )
+    session_id: str | None = Field(
+        default=None,
+        description=(
+            "Conversation session id. Multiple turns sharing the same "
+            "(user_id, patient_id, session_id) inherit prior turns' "
+            "messages as context. The BFF mints this on launch; "
+            "follow-up callers should reuse it across turns. The chat "
+            "endpoint synthesises a stable id when missing so a "
+            "single-turn caller still works."
+        ),
     )
 
 
@@ -167,6 +209,54 @@ class ChatResponse(BaseModel):
     data_gaps: list[str] = Field(default_factory=list)
     dropped: list[str] = Field(default_factory=list)
     telemetry: dict = Field(default_factory=dict)
+    session_id: str | None = Field(
+        default=None,
+        description=(
+            "Echoed back to the caller — useful when the request omitted "
+            "session_id and the server synthesised one. Reuse this on "
+            "subsequent turns to thread the conversation."
+        ),
+    )
+
+
+def _resolve_session_id(body_session_id: str | None, claims: TaskTokenClaims) -> str:
+    """Return the session id to thread state under.
+
+    Precedence:
+
+    1. The caller's explicit ``session_id``.
+    2. A claim-derived stable id ``"sid:<user>:<patient>"``. Stable
+       across reconnects but unique per (clinician, patient), so a
+       single-page UI that forgets to mint a session still gets
+       multi-turn memory within one chart open.
+
+    Empty strings are treated as "not provided" because Pydantic's
+    ``str | None`` does not auto-coerce ``""`` to ``None``.
+    """
+    if body_session_id and body_session_id.strip():
+        return body_session_id.strip()
+    return f"sid:{claims.user_id}:{claims.patient_id}"
+
+
+def _presenting_for_message(message: str | None) -> Presenting | None:
+    """Inject the clinician's message as a presenting symptom.
+
+    Used for the ``diagnostic_cross_check`` and ``chart_error_scan``
+    purposes when the caller supplied a non-empty message: the
+    pairwise comparator's prompts read ``snapshot.presenting.symptoms``
+    directly, so writing the message there is the smallest wedge that
+    actually drives the model input. Returns ``None`` when there is
+    nothing to inject so the snapshot's reconciler-derived presenting
+    section remains untouched.
+    """
+    if not message or not message.strip():
+        return None
+    text = message.strip()
+    return Presenting(
+        symptoms=[text],
+        since=None,
+        source="chat_message_override",
+    )
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -174,6 +264,7 @@ async def chat(
     body: ChatRequest,
     claims: TaskTokenClaims = Depends(require_task_token),
     mock: int = 0,
+    memory: ConversationMemory = Depends(get_default_memory),
 ) -> ChatResponse:
     """Handle one turn of the conversation.
 
@@ -191,6 +282,18 @@ async def chat(
 
     ``?mock=1`` forces the deterministic mock provider, but is rejected
     unless ``COPILOT_ALLOW_MOCK=true``.
+
+    Selective retrieval. The chat handler computes a per-request
+    :class:`ShardSelection` from ``body.purpose`` and ``body.message``
+    (see :mod:`sidecar.snapshot.shard_selection`) and passes it to the
+    snapshot fetch — the fan-out only pulls the FHIR shards a given
+    turn actually needs.
+
+    Session memory. When ``body.message`` is present the turn is
+    appended to a process-local ``ConversationMemory`` keyed by
+    ``(user_id, patient_id, session_id)``. ``follow_up_question``
+    turns prepend prior messages to the model prompt so questions
+    like "what about her CRP?" inherit context from the previous turn.
     """
     if not claims.is_purpose_authorized(body.purpose):
         raise HTTPException(
@@ -204,10 +307,24 @@ async def chat(
                 ),
             },
         )
+    if body.purpose == "follow_up_question" and (
+        body.message is None or not body.message.strip()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "missing_message",
+                "message": (
+                    "purpose='follow_up_question' requires a non-empty "
+                    "'message' field. Without a message there is "
+                    "nothing for the model to answer."
+                ),
+            },
+        )
+
     from sidecar.agent.graph import make_provider
 
     settings = get_settings()
-    snapshot = await _snapshot_for(body.patient_id, claims=claims)
     force_mock = bool(mock) and getattr(settings, "allow_mock", False)
     if mock and not force_mock:
         raise HTTPException(
@@ -217,14 +334,93 @@ async def chat(
                 "message": "?mock=1 requires COPILOT_ALLOW_MOCK=true",
             },
         )
-    cfg = GraphConfig(
-        purpose=body.purpose,
-        user_id=claims.user_id,
-        settings=settings,
-        audit_log=_AUDIT_LOG,
-        provider=make_provider(settings, force_mock=force_mock),
-    )
-    response = await run_graph(snapshot, cfg)
+
+    # Compute the shard selection once. Errors here mean a typo in a
+    # purpose value got past Pydantic — re-raise as 500 because that
+    # is a server-side bug, not a client-side input error.
+    try:
+        shards = select_shards(body.purpose, body.message)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "shard_selection_failed",
+                "message": str(exc),
+            },
+        ) from exc
+
+    snapshot = await _snapshot_for(body.patient_id, claims=claims, shards=shards)
+    if body.purpose != "follow_up_question":
+        # Inject the clinician's message text into the snapshot's
+        # presenting block so the pairwise comparator's prompts
+        # actually carry the user's input. Without this the message
+        # field was inert.
+        injected = _presenting_for_message(body.message)
+        if injected is not None:
+            snapshot = snapshot.model_copy(update={"presenting": injected})
+
+    session_id = _resolve_session_id(body.session_id, claims)
+    conv_memory = memory or get_default_memory()
+
+    if body.purpose == "follow_up_question":
+        prior_turns = conv_memory.turns(
+            user_id=claims.user_id,
+            patient_id=body.patient_id,
+            session_id=session_id,
+        )
+        cfg = FollowUpConfig(
+            message=body.message or "",
+            prior_turns=prior_turns,
+            user_id=claims.user_id,
+            settings=settings,
+            audit_log=_AUDIT_LOG,
+            provider=make_provider(settings, force_mock=force_mock),
+        )
+        response = await run_follow_up(snapshot, cfg)
+    else:
+        cfg = GraphConfig(
+            purpose=body.purpose,
+            user_id=claims.user_id,
+            settings=settings,
+            audit_log=_AUDIT_LOG,
+            provider=make_provider(settings, force_mock=force_mock),
+        )
+        response = await run_graph(snapshot, cfg)
+
+    # Record this turn for any future follow-ups in the session.
+    if body.message and body.message.strip():
+        now = time.time()
+        conv_memory.record(
+            user_id=claims.user_id,
+            patient_id=body.patient_id,
+            session_id=session_id,
+            turn=ConversationTurn(
+                role="user", content=body.message.strip(),
+                ts_unix=now, purpose=body.purpose,
+            ),
+        )
+        # Store a redacted assistant turn — the verdict + at most
+        # one short headline. Free-text answers, candidate labels,
+        # and chart quotes never go in.
+        assistant_summary = response.verdict
+        headline = ""
+        if response.candidates:
+            first = response.candidates[0]
+            label = str(first.get("label") or "")
+            if label and label != "follow_up_answer":
+                headline = label[:80]
+        if headline:
+            assistant_summary = f"{response.verdict}: {headline}"
+        conv_memory.record(
+            user_id=claims.user_id,
+            patient_id=body.patient_id,
+            session_id=session_id,
+            turn=ConversationTurn(
+                role="assistant", content=assistant_summary,
+                ts_unix=now, purpose=body.purpose,
+            ),
+        )
+
     logger.info(
         "chat_handled",
         extra={
@@ -232,6 +428,10 @@ async def chat(
             "purpose": body.purpose,
             "verdict": response.verdict,
             "pair_count": response.telemetry.get("total_pair_count"),
+            "session_id": session_id,
+            "shard_count": len(shards),
+            "shards": sorted(shards.names),
+            "message_chars": len(body.message or ""),
             "user_id": claims.user_id,
             "mock": force_mock,
         },
@@ -242,7 +442,18 @@ async def chat(
         chart_error_flags=response.chart_error_flags,
         data_gaps=response.data_gaps,
         dropped=response.dropped,
-        telemetry=response.telemetry,
+        telemetry={
+            **response.telemetry,
+            "shards_pulled": sorted(shards.names),
+            "prior_turn_count": len(
+                conv_memory.turns(
+                    user_id=claims.user_id,
+                    patient_id=body.patient_id,
+                    session_id=session_id,
+                )
+            ),
+        },
+        session_id=session_id,
     )
 
 

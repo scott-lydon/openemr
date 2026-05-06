@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Query, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from sidecar.config import get_settings
@@ -28,6 +29,7 @@ from .oauth import (
     make_pkce_pair,
 )
 from .policy import PolicyStore
+from .routes import documents as documents_routes
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,23 @@ _POLICY.grant(user_id="dr.m@example.org", patient_id="Patient/87415")
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Clinical Co-Pilot BFF", version="0.1.0")
+
+    # CORS: the W2 chat page is served by the sidecar on :8801 and
+    # calls /dev/mint-token here on :8800. The browser blocks the
+    # cross-origin XHR without explicit allowance. Localhost-scoped
+    # whitelist; production deploys behind a single origin and does
+    # not need this.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:8801",
+            "http://127.0.0.1:8801",
+            "http://localhost:8800",
+        ],
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -204,6 +223,9 @@ def create_app() -> FastAPI:
                 "exp": claims.expires_at,
             },
         }
+
+    # Week 2 documents endpoint and dev-mint helper.
+    app.include_router(documents_routes.router)
 
     return app
 

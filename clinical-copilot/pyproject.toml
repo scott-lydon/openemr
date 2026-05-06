@@ -45,6 +45,16 @@ langgraph = [
 postgres = [
     "psycopg[binary]>=3.2.0",
     "pgvector>=0.3.6",
+    # Schema migration tool. Used for the agent_jobs queue table, the
+    # citations table, and every Week 2 schema change. Keeping migrations
+    # source-controlled is the only safe way to evolve the queue schema
+    # without re-running the data-loss-prone CREATE TABLE IF NOT EXISTS
+    # pattern.
+    "alembic>=1.14.0",
+    # SQLAlchemy is a transitive dep of alembic but we list it explicitly
+    # because the migration env.py imports it directly. Pinning here keeps
+    # the upgrade path predictable when alembic relaxes its lower bound.
+    "sqlalchemy>=2.0.36",
 ]
 observability = [
     "opentelemetry-api>=1.27.0",
@@ -57,6 +67,73 @@ observability = [
 phi = [
     "presidio-analyzer>=2.2.355",
     "presidio-anonymizer>=2.2.355",
+]
+# ---- Week 2 (Multimodal Evidence Agent) optional deps -----------------------
+# Each group is independently installable: `pip install -e ".[w2_ingest]"`.
+# The `w2` meta group pulls in every Week 2 dependency at once.
+w2_ingest = [
+    # Document rendering (rasterize PDFs at 300 DPI, native text extraction).
+    "pymupdf>=1.24.0",
+    # Bounding-box overlay rendering, fixture image manipulation.
+    "Pillow>=10.4.0",
+    # MIME sniffing on the upload boundary; rejects spoofed Content-Type.
+    "python-magic>=0.4.27",
+    # ClamAV daemon client for upload virus scanning.
+    "clamd>=1.0.2",
+    # PDF sanitizer used to strip embedded JavaScript and external entities.
+    "pypdf>=5.0.0",
+]
+w2_rag = [
+    # Cohere Rerank v3. Patient data never reaches Cohere; reranker isolation
+    # test enforces. See sidecar/sanitize/reranker_isolation.py.
+    "cohere>=5.11.0",
+    # Sparse retrieval (BM25Okapi). Used inside Reciprocal Rank Fusion.
+    "rank-bm25>=0.2.2",
+    # Tokenizer for chunking, query rewriting, and recall-test parity with
+    # the embedder's tokenizer family.
+    "tiktoken>=0.8.0",
+]
+w2_sanitize = [
+    # Layer 4 input scanning: PromptInjection, Anonymize, BanSubstrings, Code.
+    # Layer 7 output scanning: Sensitive, Toxicity, NoRefusal.
+    "llm-guard>=0.3.15",
+    # Layer 4 second opinion ensembled with LLM Guard. Reduces shared blind
+    # spots in prompt-injection detection.
+    "rebuff>=0.1.5",
+]
+w2_render = [
+    # Synthetic lab fixture rendering (clean tier).
+    "reportlab>=4.2.0",
+    # HTML-to-PDF for intake form fixtures with realistic layout.
+    "weasyprint>=63.0",
+]
+w2_judges = [
+    # Cross-vendor judge: when the extractor is OpenAI, the judge is Claude.
+    # Reduces shared blind spots in pass/fail evaluation.
+    "anthropic>=0.40.0",
+]
+w2_widgets = [
+    # Lab trend chart (Phase 11 extension); rendered server-side as PNG.
+    "matplotlib>=3.9.0",
+    # Rapid fuzzy match for citation quote highlight fallback when the VLM
+    # does not return a native bounding box.
+    "rapidfuzz>=3.10.0",
+]
+w2_test = [
+    # Property-based testing on schema and sanitization invariants.
+    "hypothesis>=6.115.0",
+    # Mutation testing on sidecar/agents, sidecar/schemas, sidecar/sanitize.
+    "mutmut>=2.5.0",
+    # Static security scan in CI.
+    "bandit>=1.7.10",
+    # Dependency vulnerability scan in CI.
+    "pip-audit>=2.7.3",
+    # k6 is a binary, not a Python dep; load tests live in tests/load/.
+]
+w2 = [
+    # Meta group: install everything Week 2 needs in one shot.
+    # `pip install -e ".[w2,dev,openai,langgraph,postgres,observability,phi]"`.
+    "clinical-copilot[w2_ingest,w2_rag,w2_sanitize,w2_render,w2_judges,w2_widgets,w2_test]",
 ]
 dev = [
     "pytest>=8.3.0",

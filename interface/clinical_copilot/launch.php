@@ -107,6 +107,11 @@ $allowedPurposes = [
     'diagnostic_cross_check',
     'chart_error_scan',
     'follow_up_question',
+    // Week 2: the freeform chat surface lets the clinician drag-and-drop
+    // a clinical document into the conversation. The upload route
+    // requires this purpose, so the launch token must include it or
+    // the chat's PDF dropzone returns 401.
+    'document_ingest',
 ];
 if (!in_array($purpose, $allowedPurposes, true)) {
     http_response_code(400);

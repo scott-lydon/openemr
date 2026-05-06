@@ -4,7 +4,10 @@
 # or join the same external network.
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector includes the vector extension preloaded;
+    # alembic just needs to ``CREATE EXTENSION vector;`` (the
+    # guideline_chunks migration does this).
+    image: pgvector/pgvector:pg16
     container_name: copilot-postgres
     environment:
       POSTGRES_USER: copilot

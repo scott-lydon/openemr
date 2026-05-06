@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clinical Co-Pilot — Chat</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f5f7fa;
+    --panel: #ffffff;
+    --ink: #1f2933;
+    --muted: #5b6573;
+    --primary: #0f3a5f;
+    --accent: #1a78c2;
+    --soft: #eaf2fa;
+    --user-bubble: #1a78c2;
+    --assistant-bubble: #ffffff;
+    --border: #d6dde6;
+    --shadow: 0 1px 3px rgba(15,58,95,.08), 0 6px 18px rgba(15,58,95,.06);
+    --warn-bg: #fff3cd;
+    --warn-text: #856404;
+    --err: #a73a35;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  body { display: flex; flex-direction: column; }
+
+  header.app {
+    background: var(--primary); color: #fff; padding: 12px 22px;
+    display: flex; align-items: center; gap: 14px;
+    box-shadow: 0 2px 10px rgba(15,58,95,.18);
+  }
+  header.app .back-btn {
+    background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.2);
+    color: #fff; border-radius: 8px; padding: 7px 14px; cursor: pointer;
+    font: inherit; font-size: 13px; font-weight: 500; text-decoration: none;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  header.app .back-btn:hover { background: rgba(255,255,255,.22); }
+  header.app .title-block { flex: 1; min-width: 0; }
+  header.app h1 { margin: 0 0 2px; font-size: 17px; font-weight: 600; }
+  header.app .ctx { font-size: 12px; opacity: .82; }
+  header.app .clear-btn {
+    background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.20);
+    color: #fff; border-radius: 8px; padding: 7px 12px; font: inherit; font-size: 12px;
+    cursor: pointer;
+  }
+  header.app .clear-btn:hover { background: rgba(255,255,255,.20); }
+
+  main.chat {
+    flex: 1; display: flex; flex-direction: column;
+    max-width: 980px; width: 100%;
+    margin: 0 auto; padding: 20px 24px 0;
+    overflow: hidden;
+  }
+  #messages {
+    flex: 1; overflow-y: auto; padding: 4px 0 18px;
+    display: flex; flex-direction: column; gap: 14px;
+    scroll-behavior: smooth;
+  }
+  .msg-row { display: flex; gap: 10px; }
+  .msg-row.user { justify-content: flex-end; }
+  .msg-row.assistant { justify-content: flex-start; }
+  .msg {
+    padding: 12px 16px; border-radius: 14px; max-width: 78%;
+    box-shadow: var(--shadow); white-space: pre-wrap; word-wrap: break-word;
+  }
+  .msg.user { background: var(--user-bubble); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.assistant { background: var(--assistant-bubble); border-bottom-left-radius: 4px;
+    border: 1px solid var(--border); }
+  .msg.system { background: var(--soft); color: var(--primary); border: 1px solid var(--border);
+    font-size: 13px; max-width: 95%; }
+  .msg .meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .msg.user .meta { color: rgba(255,255,255,.78); }
+  .chip { display: inline-block; background: var(--soft); color: var(--primary);
+    padding: 2px 8px; border-radius: 6px; font-size: 11px; margin-right: 4px; }
+  .doc-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--soft); color: var(--primary);
+    padding: 4px 10px; border-radius: 18px; font-size: 12px; margin: 4px 4px 0 0;
+  }
+  .doc-chip .x { cursor: pointer; opacity: .5; }
+  .doc-chip .x:hover { opacity: 1; color: var(--err); }
+
+  .composer-wrap {
+    border-top: 1px solid var(--border); background: var(--panel);
+    padding: 14px 0 18px;
+  }
+  .composer {
+    max-width: 980px; margin: 0 auto; padding: 0 24px;
+  }
+  .dropzone {
+    border: 2px dashed transparent;
+    border-radius: 12px;
+    transition: background .15s, border-color .15s;
+    padding: 4px;
+  }
+  .dropzone.over { border-color: var(--accent); background: var(--soft); }
+  .composer-shell {
+    display: flex; align-items: flex-end; gap: 10px;
+    background: #fff; border: 1px solid var(--border);
+    border-radius: 14px; padding: 8px 8px 8px 14px;
+    box-shadow: var(--shadow);
+  }
+  textarea#input {
+    flex: 1; border: 0; outline: 0; resize: none;
+    font: inherit; font-size: 15px; line-height: 1.5;
+    background: transparent; color: var(--ink);
+    min-height: 28px; max-height: 220px;
+    padding: 8px 0;
+  }
+  .composer button {
+    background: var(--accent); color: #fff; border: 0;
+    width: 38px; height: 38px; border-radius: 50%;
+    font-size: 16px; cursor: pointer; display: inline-flex;
+    align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .composer button:disabled { opacity: .35; cursor: not-allowed; }
+  .composer button.attach {
+    background: transparent; color: var(--accent);
+    border: 1px solid var(--border);
+  }
+  .composer button.attach:hover { background: var(--soft); }
+  .attached-row { margin-top: 8px; min-height: 0; }
+  .composer-hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .composer-hint .err { color: var(--err); }
+
+  /* Loading dot animation for the assistant turn-in-progress */
+  .typing { display: inline-flex; gap: 4px; padding: 4px 0; }
+  .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted);
+    animation: bob 1.2s infinite ease-in-out; }
+  .typing span:nth-child(2) { animation-delay: .15s; }
+  .typing span:nth-child(3) { animation-delay: .3s; }
+  @keyframes bob { 0%, 80%, 100% { transform: translateY(0); opacity: .4; }
+                   40% { transform: translateY(-3px); opacity: 1; } }
+
+  .cite-list { margin-top: 8px; padding-left: 16px; font-size: 12px; color: var(--muted); }
+  .warn-banner { background: var(--warn-bg); color: var(--warn-text);
+    padding: 10px 16px; border-radius: 8px; margin: 12px 0; font-size: 13px; }
+  .empty-state { text-align: center; color: var(--muted); padding: 60px 20px; }
+  .empty-state strong { color: var(--ink); display: block; margin-bottom: 8px; font-size: 16px; }
+
+  input[type="file"] { display: none; }
+</style>
+</head>
+<body>
+
+<header class="app">
+  <a class="back-btn" id="back-btn" href="#" title="Back to Co-Pilot">&larr; Co-Pilot</a>
+  <div class="title-block">
+    <h1>Chat with the Co-Pilot</h1>
+    <div class="ctx" id="ctx-line">Loading patient context…</div>
+  </div>
+  <button class="clear-btn" id="clear-btn" title="Clear this conversation">Clear</button>
+</header>
+
+<main class="chat">
+  <div id="messages"></div>
+</main>
+
+<div class="composer-wrap">
+  <div class="composer">
+    <div id="warn-banner" class="warn-banner" hidden></div>
+    <div class="dropzone" id="dropzone">
+      <div class="composer-shell">
+        <button class="attach" id="attach-btn" type="button" title="Attach a PDF or image">📎</button>
+        <input type="file" id="file-input" accept="application/pdf,image/png,image/jpeg,image/tiff" multiple />
+        <textarea id="input" placeholder="Ask the Co-Pilot, or drop a PDF here…" rows="1"></textarea>
+        <button id="send-btn" type="button" disabled aria-label="Send">↑</button>
+      </div>
+    </div>
+    <div class="attached-row" id="attached-row"></div>
+    <div class="composer-hint" id="composer-hint">
+      Cmd/Ctrl + Enter to send. Drop PDFs anywhere on the input box to attach.
+    </div>
+  </div>
+</div>
+
+<script>
+const SIDECAR_BASE = window.location.origin;
+const $ = (id) => document.getElementById(id);
+
+// ─── Token + patient bootstrap ───────────────────────────────────────
+function readBootstrap() {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  let token = params.get('token');
+  let patient = params.get('patient');
+  // Fallback: chat.html stashed the token in sessionStorage when it
+  // launched this window. Honor that so a stripped-from-URL token still
+  // works.
+  if (!token) {
+    try { token = sessionStorage.getItem('copilot:task_token') || null; } catch (e) {}
+  }
+  // Strip the token from the visible URL after reading.
+  // NOTE: must use window.history explicitly because we declare
+  // ``let history`` at module scope below, which would otherwise
+  // shadow the global and produce a temporal-dead-zone reference
+  // error here (this function runs before ``let history`` is reached).
+  if (params.has('token')) {
+    params.delete('token');
+    const cleaned = params.toString();
+    window.history.replaceState({}, '', cleaned ? '#' + cleaned : window.location.pathname + window.location.search);
+  }
+  return { token, patient };
+}
+const { token: TASK_TOKEN, patient: PATIENT_ID } = readBootstrap();
+
+if (TASK_TOKEN) {
+  try { sessionStorage.setItem('copilot:task_token', TASK_TOKEN); } catch (e) {}
+}
+
+function authFetch(input, init) {
+  const opts = init ? { ...init } : {};
+  opts.headers = new Headers(opts.headers || {});
+  if (TASK_TOKEN) opts.headers.set('Authorization', 'Bearer ' + TASK_TOKEN);
+  return fetch(input, opts);
+}
+
+function setWarn(text) {
+  if (!text) { $('warn-banner').hidden = true; return; }
+  $('warn-banner').textContent = text;
+  $('warn-banner').hidden = false;
+}
+
+// ─── Conversation persistence ────────────────────────────────────────
+// Each message is { role: 'user'|'assistant'|'system', text: string,
+//                   meta?: string, citations?: string[],
+//                   attachments?: [{document_id, filename}] }
+// Persisted under sessionStorage key `chat:history:{patient_id}` so a
+// round-trip to the Co-Pilot view and back keeps the thread.
+const HISTORY_KEY = `chat:history:${PATIENT_ID || 'unknown'}`;
+const ATTACHED_KEY = `chat:attached:${PATIENT_ID || 'unknown'}`;
+
+function loadHistory() {
+  try {
+    const raw = sessionStorage.getItem(HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) { return []; }
+}
+function saveHistory(history) {
+  try { sessionStorage.setItem(HISTORY_KEY, JSON.stringify(history)); }
+  catch (e) { /* quota; non-fatal */ }
+}
+function loadAttached() {
+  try {
+    const raw = sessionStorage.getItem(ATTACHED_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) { return []; }
+}
+function saveAttached(list) {
+  try { sessionStorage.setItem(ATTACHED_KEY, JSON.stringify(list)); }
+  catch (e) {}
+}
+
+let history = loadHistory();
+let attached = loadAttached();
+
+// ─── Co-Pilot result seeding ─────────────────────────────────────────
+// chat.html cached its dx + ce + snapshot under
+// sessionStorage[`copilot:results:{patientId}`]. On first open we
+// summarize that into a system message so the conversation starts
+// already grounded in the chart context.
+function readCopilotCache() {
+  try {
+    const key = `copilot:results:${PATIENT_ID}`;
+    const raw = sessionStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+function seedFromCopilotCache() {
+  if (history.length > 0) return; // already seeded — don't duplicate.
+  const cached = readCopilotCache();
+  if (!cached) return;
+
+  const lines = [];
+  if (cached.snap) {
+    const d = cached.snap.demographics || {};
+    const ageSex = [];
+    if (d.age != null) ageSex.push(`${d.age} y/o`);
+    if (d.sex_at_birth) ageSex.push(d.sex_at_birth);
+    const headParts = [cached.snap.patient_id];
+    if (ageSex.length) headParts.push(ageSex.join(' · '));
+    lines.push(`**Patient:** ${headParts.join(' · ')}`);
+
+    // Snapshot uses ``active_problems``, not ``problems``. Each item
+    // carries .label (text) and optional .icd10 / .snomed.
+    const probs = (cached.snap.active_problems || [])
+      .map(p => p.label || p.icd10 || p.snomed || '')
+      .filter(Boolean);
+    if (probs.length) lines.push(`**Active problems:** ${probs.join(', ')}`);
+
+    // Medications: .label is often empty in the snapshot — fall back
+    // to a "<rxnorm> <dose>" rendering so the user sees something
+    // concrete. Real labels (e.g. "Metformin 500 mg") render when present.
+    const meds = (cached.snap.medications || [])
+      .map(m => {
+        if (m.label && m.label.trim()) return m.label;
+        const parts = [];
+        if (m.rxnorm) parts.push(`RxNorm:${m.rxnorm}`);
+        if (m.dose) parts.push(m.dose);
+        return parts.join(' ');
+      })
+      .filter(Boolean);
+    if (meds.length) lines.push(`**Medications:** ${meds.join(', ')}`);
+
+    const allergies = (cached.snap.allergies || [])
+      .map(a => a.substance || a.label || a.code || '')
+      .filter(Boolean);
+    if (allergies.length) lines.push(`**Allergies:** ${allergies.join(', ')}`);
+
+    const pres = cached.snap.presenting || {};
+    const sym = (pres.symptoms || []).filter(Boolean);
+    if (sym.length) lines.push(`**Presenting:** ${sym.join('; ')}`);
+  }
+  if (cached.dx && cached.dx.candidates) {
+    // The pairwise comparator emits .label (candidate name) and
+    // .max_likelihood_pct (the highest per-symptom likelihood). Older
+    // shapes used .probability_pct / .candidate_label; tolerate both.
+    const top = cached.dx.candidates.slice(0, 3)
+      .map(c => {
+        const name = c.label || c.candidate_label || c.candidate || '';
+        const pct = c.max_likelihood_pct ?? c.probability_pct ?? 0;
+        return name ? `${name} (${Math.round(pct)}%)` : '';
+      })
+      .filter(Boolean);
+    if (top.length) lines.push(`**Top diagnostic considerations:** ${top.join(', ')}`);
+  }
+  if (cached.ce && (cached.ce.chart_error_flags || []).length) {
+    lines.push(`**Chart error flags:** ${cached.ce.chart_error_flags.length} flagged.`);
+  }
+
+  if (!lines.length) return;
+  const summary = "I've reviewed this chart. Here's the snapshot from the Co-Pilot:\n\n" + lines.join('\n');
+  history.push({ role: 'assistant', text: summary, meta: 'context loaded from chart' });
+  saveHistory(history);
+}
+
+// ─── Rendering ───────────────────────────────────────────────────────
+function renderHistory() {
+  const messages = $('messages');
+  messages.innerHTML = '';
+  if (!history.length) {
+    messages.innerHTML = `
+      <div class="empty-state">
+        <strong>Start a conversation</strong>
+        <div>Ask about the chart, or drop a clinical PDF and ask a question about it.</div>
+      </div>`;
+    return;
+  }
+  for (const msg of history) {
+    appendMessageElement(msg);
+  }
+  scrollToBottom();
+}
+
+function appendMessageElement(msg) {
+  const messages = $('messages');
+  const row = document.createElement('div');
+  row.className = `msg-row ${msg.role}`;
+  const bubble = document.createElement('div');
+  bubble.className = `msg ${msg.role}`;
+  // Render markdown-light: convert **bold** and \n to <br>.
+  bubble.innerHTML = renderMarkdownLight(msg.text);
+  if (msg.attachments && msg.attachments.length) {
+    const att = document.createElement('div');
+    att.style.marginTop = '6px';
+    att.innerHTML = msg.attachments
+      .map(a => `<span class="doc-chip">📄 ${escapeHtml(a.filename || a.document_id)}</span>`)
+      .join('');
+    bubble.appendChild(att);
+  }
+  if (msg.citations && msg.citations.length) {
+    const cl = document.createElement('div');
+    cl.className = 'cite-list';
+    cl.innerHTML = msg.citations.map(c => `· ${escapeHtml(c)}`).join('<br>');
+    bubble.appendChild(cl);
+  }
+  if (msg.meta) {
+    const m = document.createElement('div');
+    m.className = 'meta';
+    m.textContent = msg.meta;
+    bubble.appendChild(m);
+  }
+  row.appendChild(bubble);
+  messages.appendChild(row);
+}
+
+function renderMarkdownLight(text) {
+  // Order matters: pull out [label](url) BEFORE escapeHtml so the URL
+  // doesn't get HTML-escaped into uselessness. Then escape the rest.
+  const linkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  const tokens = [];
+  let lastIndex = 0;
+  let m;
+  while ((m = linkRe.exec(text)) !== null) {
+    tokens.push({type: 'text', value: text.slice(lastIndex, m.index)});
+    tokens.push({type: 'link', label: m[1], url: m[2]});
+    lastIndex = m.index + m[0].length;
+  }
+  tokens.push({type: 'text', value: text.slice(lastIndex)});
+
+  return tokens.map(tok => {
+    if (tok.type === 'link') {
+      return `<a href="${escapeHtml(tok.url)}" target="_blank" rel="noopener" ` +
+             `style="color:inherit;text-decoration:underline dotted;">` +
+             `${escapeHtml(tok.label)}</a>`;
+    }
+    return escapeHtml(tok.value)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>');
+  }).join('');
+}
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, ch => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[ch]));
+}
+function scrollToBottom() {
+  const m = $('messages');
+  m.scrollTop = m.scrollHeight;
+}
+
+function showTypingIndicator() {
+  const messages = $('messages');
+  const row = document.createElement('div');
+  row.className = 'msg-row assistant';
+  row.id = 'typing-row';
+  row.innerHTML = '<div class="msg assistant"><div class="typing"><span></span><span></span><span></span></div></div>';
+  messages.appendChild(row);
+  scrollToBottom();
+}
+function clearTypingIndicator() {
+  const row = $('typing-row');
+  if (row) row.remove();
+}
+
+function renderAttached() {
+  const row = $('attached-row');
+  row.innerHTML = attached.map(a =>
+    `<span class="doc-chip">📄 ${escapeHtml(a.filename || a.document_id)} ` +
+    `<span class="x" data-doc-id="${escapeHtml(a.document_id)}">×</span></span>`
+  ).join('');
+  row.querySelectorAll('.x').forEach(el => {
+    el.addEventListener('click', () => {
+      attached = attached.filter(a => a.document_id !== el.dataset.docId);
+      saveAttached(attached);
+      renderAttached();
+    });
+  });
+}
+
+// ─── Header context ──────────────────────────────────────────────────
+function renderContextLine() {
+  const cached = readCopilotCache();
+  if (cached && cached.snap) {
+    const d = cached.snap.demographics || {};
+    const parts = [PATIENT_ID];
+    if (d.age != null) parts.push(`${d.age} y/o`);
+    if (d.sex_at_birth) parts.push(d.sex_at_birth);
+    $('ctx-line').textContent = parts.join(' · ');
+  } else {
+    $('ctx-line').textContent = PATIENT_ID || 'No patient bound';
+  }
+}
+
+// ─── Send a turn ─────────────────────────────────────────────────────
+async function sendTurn() {
+  const text = $('input').value.trim();
+  const hasAttachment = attached.length > 0;
+  if (!text && !hasAttachment) return;
+  if (!TASK_TOKEN) {
+    setWarn('No task token in this session. Re-open the chat from the Co-Pilot view.');
+    return;
+  }
+
+  // Compose user message — include attachments for visual receipt.
+  const userMsg = {
+    role: 'user',
+    text: text || '(see attached document)',
+    attachments: attached.slice(),
+  };
+  history.push(userMsg);
+  saveHistory(history);
+  appendMessageElement(userMsg);
+  // Clear the attachments from the composer, but the message keeps them visually.
+  attached = [];
+  saveAttached(attached);
+  renderAttached();
+  $('input').value = '';
+  $('input').style.height = 'auto';
+  $('send-btn').disabled = true;
+
+  showTypingIndicator();
+
+  // Compose the message that goes to /chat. When a document was just
+  // attached, prepend a sentinel so the agent knows to consider it.
+  let agentMessage = text;
+  if (userMsg.attachments.length) {
+    const docList = userMsg.attachments
+      .map(a => a.document_id).join(', ');
+    agentMessage = `[Attached documents: ${docList}] ${text || 'Please summarize and tell me what to do next.'}`;
+  }
+
+  try {
+    // Use the Week 2 multi-agent graph route. It runs the supervisor's
+    // deterministic preflight + LLM judge fallback, the worker
+    // sequence (intake_extractor / evidence_retriever / pairwise_comparer
+    // depending on intent), the evidence packet builder, the verifier,
+    // and the response formatter — and returns the rendered text plus
+    // the supervisor's decision metadata for display.
+    const resp = await authFetch(`${SIDECAR_BASE}/agent-api/v1/w2-chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patient_id: PATIENT_ID,
+        user_question: agentMessage,
+        attached_document_ids: userMsg.attachments.map(a => a.document_id),
+      }),
+    });
+    clearTypingIndicator();
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`status ${resp.status}: ${body.slice(0, 240)}`);
+    }
+    const j = await resp.json();
+    let assistantText = j.rendered_text || JSON.stringify(j, null, 2);
+    // Inject hyperlinks for citation chunk_ids that the route mapped
+    // to deep-link or signed-preview URLs. The renderer outputs each
+    // citation as ``[N] <chunk_id>``; we add a `↗` link after the id.
+    const links = j.citation_links || {};
+    if (Object.keys(links).length) {
+      const lines = assistantText.split('\n').map(line => {
+        for (const [cid, url] of Object.entries(links)) {
+          // Only replace exact occurrences at the end of citation list lines.
+          if (line.endsWith(' ' + cid) || line === cid) {
+            return line + ' [view ↗](' + url + ')';
+          }
+        }
+        return line;
+      });
+      assistantText = lines.join('\n');
+    }
+    const meta = [
+      `intent: ${j.intent_kind}`,
+      `decision: ${j.decision_path}`,
+      `workers: ${(j.worker_sequence || []).join(' → ') || '—'}`,
+      j.refused ? 'refused' : null,
+    ].filter(Boolean).join(' · ');
+    const assistantMsg = {
+      role: 'assistant',
+      text: assistantText,
+      meta: meta,
+    };
+    history.push(assistantMsg);
+    saveHistory(history);
+    appendMessageElement(assistantMsg);
+    scrollToBottom();
+  } catch (err) {
+    clearTypingIndicator();
+    // Token expiry is the dominant first-chat failure mode (5-min TTL,
+    // long demo prep). Surface a friendly recovery path instead of a
+    // raw error string.
+    const isExpired = /token_expired|status 401/i.test(err.message || '');
+    const text = isExpired
+      ? "Your session timed out. Click ← Co-Pilot, then 💬 Chat again to mint a fresh token, then re-send your message."
+      : `I hit an error talking to the agent: ${err.message}`;
+    const msg = {
+      role: 'assistant',
+      text,
+      meta: isExpired ? 'session expired' : 'error',
+    };
+    history.push(msg);
+    saveHistory(history);
+    appendMessageElement(msg);
+  } finally {
+    updateSendButton();
+  }
+}
+
+function renderAgentBody(j) {
+  // /chat with purpose=follow_up_question may return { message } directly,
+  // or one of the structured shapes. Field names match the snapshot
+  // shape: label / max_likelihood_pct / rationale (not candidate_label /
+  // probability_pct / explanation).
+  if (j.message) return String(j.message);
+  if (j.candidates && j.candidates.length) {
+    const lines = ['**Diagnostic considerations:**'];
+    for (const c of j.candidates.slice(0, 5)) {
+      const label = c.label || c.candidate_label || c.candidate || '(no label)';
+      const pct = c.max_likelihood_pct ?? c.probability_pct ?? 0;
+      const expl = c.rationale || c.explanation || '';
+      lines.push(`• ${label} (${Math.round(pct)}%) — ${expl}`);
+    }
+    return lines.join('\n');
+  }
+  if (j.chart_error_flags && j.chart_error_flags.length) {
+    const lines = ['**Chart-error flags:**'];
+    for (const f of j.chart_error_flags) {
+      lines.push(`• ${f.label || f.flag || f.kind || ''}: ${f.rationale || f.explanation || ''}`);
+    }
+    return lines.join('\n');
+  }
+  if (j.verdict) return `Verdict: ${j.verdict}`;
+  return JSON.stringify(j, null, 2);
+}
+
+function buildMetaLine(j) {
+  const t = j.telemetry || {};
+  const parts = [];
+  if (t.total_pair_count != null) parts.push(`${t.total_pair_count} pairs`);
+  if (t.total_completion_tokens != null) parts.push(`${t.total_completion_tokens} tokens`);
+  if (j.dropped && j.dropped.length) parts.push(`${j.dropped.length} dropped`);
+  return parts.join(' · ');
+}
+
+// ─── Upload ──────────────────────────────────────────────────────────
+async function uploadFiles(files) {
+  if (!TASK_TOKEN) {
+    setWarn('No task token in this session. Re-open the chat from the Co-Pilot view.');
+    return;
+  }
+  setWarn('');
+  for (const file of files) {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('doc_type', 'lab_pdf');
+    form.append('source', 'upload');
+    try {
+      // The documents route accepts the bare UUID (FastAPI cannot
+      // path-match a slash inside a URL-encoded path parameter). Strip
+      // the ``Patient/`` prefix here; the handler reconstructs the
+      // canonical reference internally.
+      const uuid = (PATIENT_ID || '').replace(/^Patient\//, '');
+      const resp = await authFetch(
+        `${SIDECAR_BASE}/agent-api/v1/patients/${encodeURIComponent(uuid)}/documents`,
+        { method: 'POST', body: form }
+      );
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`status ${resp.status}: ${text.slice(0, 200)}`);
+      }
+      const j = await resp.json();
+      attached.push({ document_id: j.document_id, filename: file.name });
+      saveAttached(attached);
+      renderAttached();
+      updateSendButton();
+    } catch (err) {
+      setWarn(`Upload failed for ${file.name}: ${err.message}`);
+    }
+  }
+}
+
+// ─── UI wiring ───────────────────────────────────────────────────────
+function updateSendButton() {
+  const hasText = $('input').value.trim().length > 0;
+  const hasAttachment = attached.length > 0;
+  $('send-btn').disabled = !(hasText || hasAttachment) || !TASK_TOKEN;
+}
+
+function autoresizeTextarea() {
+  const el = $('input');
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 220) + 'px';
+}
+
+$('back-btn').addEventListener('click', (e) => {
+  e.preventDefault();
+  // Prefer history.back() so the Co-Pilot view restores cleanly without
+  // adding a duplicate Co-Pilot entry to history (which would re-trigger
+  // the loop on the user's next Back press). Fall back to a direct
+  // navigation when there's no history (chat opened in a fresh tab).
+  if (window.history.length > 1 && document.referrer.includes('://')) {
+    window.history.back();
+    return;
+  }
+  const params = new URLSearchParams();
+  if (PATIENT_ID) params.set('patient', PATIENT_ID);
+  if (TASK_TOKEN) params.set('token', TASK_TOKEN);
+  window.location.assign('/' + (params.toString() ? '#' + params.toString() : ''));
+});
+
+$('clear-btn').addEventListener('click', () => {
+  if (!confirm('Clear this conversation? The Co-Pilot chart context will be re-seeded.')) return;
+  history = [];
+  attached = [];
+  saveHistory(history);
+  saveAttached(attached);
+  seedFromCopilotCache();
+  renderHistory();
+  renderAttached();
+});
+
+$('send-btn').addEventListener('click', sendTurn);
+$('input').addEventListener('keydown', (e) => {
+  if ((e.key === 'Enter') && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    sendTurn();
+  }
+});
+$('input').addEventListener('input', () => {
+  autoresizeTextarea();
+  updateSendButton();
+});
+$('attach-btn').addEventListener('click', () => $('file-input').click());
+$('file-input').addEventListener('change', async (e) => {
+  await uploadFiles(Array.from(e.target.files));
+  e.target.value = '';
+});
+
+const dz = $('dropzone');
+['dragenter', 'dragover'].forEach(ev =>
+  dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev =>
+  dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('over'); }));
+dz.addEventListener('drop', async (e) => {
+  await uploadFiles(Array.from(e.dataTransfer.files));
+});
+// Page-wide drop also accepts files, so dragging outside the small zone
+// still works.
+['dragenter', 'dragover'].forEach(ev =>
+  document.addEventListener(ev, e => { if (e.dataTransfer && e.dataTransfer.types?.includes('Files')) e.preventDefault(); }));
+document.addEventListener('drop', async (e) => {
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+    e.preventDefault();
+    await uploadFiles(Array.from(e.dataTransfer.files));
+  }
+});
+
+// ─── Bootstrap ───────────────────────────────────────────────────────
+if (!PATIENT_ID) {
+  setWarn('No patient bound to this chat. Open the chat from the Co-Pilot view so the patient + token are in the URL.');
+}
+seedFromCopilotCache();
+renderContextLine();
+renderHistory();
+renderAttached();
+updateSendButton();
+$('input').focus();
+</script>
+</body>
+</html>
