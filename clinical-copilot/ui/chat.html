@@ -220,7 +220,7 @@
 </head>
 <body>
 <header class="app">
-  <a class="back-btn" href="javascript:history.back()" title="Back to OpenEMR">&larr; Back</a>
+  <a class="back-btn" href="javascript:void(0)" id="copilot-back-btn" title="Back to OpenEMR">&larr; Back</a>
   <div class="title-block">
     <h1>Clinical Co-Pilot</h1>
     <div class="ctx" id="ctx-line">Loading patient context…</div>
@@ -806,6 +806,20 @@ window.addEventListener('hashchange', () => {
 // Header button wiring. `openChatWindow` and `runForPatient` are defined
 // above; nothing in the closure changes when the user clicks.
 $('open-chat-btn').addEventListener('click', openChatWindow);
+
+// "Back" closes this Co-Pilot tab when it was opened by OpenEMR's launch
+// button (window.opener present) and falls back to navigating to OpenEMR
+// home otherwise. Avoids the history-back loop where Chat → Co-Pilot →
+// Back went all the way back to Chat.
+$('copilot-back-btn').addEventListener('click', () => {
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.close();
+      return;
+    }
+  } catch (e) {}
+  window.location.href = 'http://localhost:8300/';
+});
 $('refresh-btn').addEventListener('click', () => {
   if (!_activeCachePatient) return;
   clearCache(_activeCachePatient);

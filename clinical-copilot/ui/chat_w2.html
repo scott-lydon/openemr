@@ -561,10 +561,17 @@ async function sendTurn() {
     scrollToBottom();
   } catch (err) {
     clearTypingIndicator();
+    // Token expiry is the dominant first-chat failure mode (5-min TTL,
+    // long demo prep). Surface a friendly recovery path instead of a
+    // raw error string.
+    const isExpired = /token_expired|status 401/i.test(err.message || '');
+    const text = isExpired
+      ? "Your session timed out. Click ← Co-Pilot, then 💬 Chat again to mint a fresh token, then re-send your message."
+      : `I hit an error talking to the agent: ${err.message}`;
     const msg = {
       role: 'assistant',
-      text: `Sorry — I hit an error talking to the agent: ${err.message}`,
-      meta: 'error',
+      text,
+      meta: isExpired ? 'session expired' : 'error',
     };
     history.push(msg);
     saveHistory(history);
@@ -662,7 +669,14 @@ function autoresizeTextarea() {
 
 $('back-btn').addEventListener('click', (e) => {
   e.preventDefault();
-  // Build the URL with token + patient so chat.html re-reads them.
+  // Prefer history.back() so the Co-Pilot view restores cleanly without
+  // adding a duplicate Co-Pilot entry to history (which would re-trigger
+  // the loop on the user's next Back press). Fall back to a direct
+  // navigation when there's no history (chat opened in a fresh tab).
+  if (window.history.length > 1 && document.referrer.includes('://')) {
+    window.history.back();
+    return;
+  }
   const params = new URLSearchParams();
   if (PATIENT_ID) params.set('patient', PATIENT_ID);
   if (TASK_TOKEN) params.set('token', TASK_TOKEN);
