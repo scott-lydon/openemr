@@ -108,13 +108,13 @@ router = APIRouter()
 
 
 @router.post(
-    "/agent-api/v1/patients/{patient_id}/documents",
+    "/agent-api/v1/patients/{patient_uuid}/documents",
     status_code=status.HTTP_201_CREATED,
     response_model=UploadResult,
 )
 async def post_patient_document(
     request: Request,
-    patient_id: Annotated[str, Path(min_length=1, max_length=128)],
+    patient_uuid: Annotated[str, Path(min_length=1, max_length=128)],
     file: Annotated[UploadFile, File(description="Clinical document bytes")],
     doc_type: Annotated[DocType, Form()],
     source: Annotated[UploadSource, Form()],
@@ -123,7 +123,26 @@ async def post_patient_document(
     fhir_client: Annotated[FhirDocumentRefClient, Depends(get_fhir_client)],
     queue_conn: Annotated[Connection, Depends(get_queue_connection)],
 ) -> UploadResult:
-    """Accept a clinical document and queue it for extraction."""
+    """Accept a clinical document and queue it for extraction.
+
+    The path parameter is the FHIR resource UUID without the
+    ``Patient/`` prefix because FastAPI's path matching treats a literal
+    slash as a path separator. Inside the handler we reconstruct the
+    canonical ``Patient/{uuid}`` form before checking the token's
+    ``patient_id`` claim.
+
+    The other route surfaces (chat, snapshot) use the same convention,
+    so the chat UI strips ``Patient/`` from the prefix before
+    constructing this URL.
+    """
+    # Accept either form for safety: callers that pass the bare uuid
+    # (the new convention) and callers that pass an URL-encoded
+    # "Patient/<uuid>" (older code) both work.
+    candidate = patient_uuid
+    if "/" in candidate:
+        candidate = candidate.split("/", 1)[1]
+    canonical_patient_id = f"Patient/{candidate}"
+
     if not claims.is_purpose_authorized("document_ingest"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -143,7 +162,7 @@ async def post_patient_document(
         purpose_of_use="document_ingest",
     )
     try:
-        assert_token_matches_patient(context, patient_id)
+        assert_token_matches_patient(context, canonical_patient_id)
     except UploadAuthError as exc:
         raise _to_http_exception(exc)
 
@@ -152,6 +171,15 @@ async def post_patient_document(
         max_attempts=5,
     )
     body = await _read_body_capped(file, parameters.max_upload_bytes)
+
+    # Mock-mode short-circuit. When COPILOT_ALLOW_MOCK=true the
+    # deployment skips Postgres + ClamAV + the FHIR write so the chat
+    # demo works on a laptop without those services. The route still
+    # validates body shape and MIME so the UI's error paths get
+    # exercised; only the persistent infra is bypassed.
+    import os as _os
+    if _os.environ.get("COPILOT_ALLOW_MOCK", "").lower() == "true":
+        return _mock_upload_result(body=body, mime_hint=file.content_type)
 
     try:
         return await handle_upload(
@@ -166,6 +194,40 @@ async def post_patient_document(
         )
     except IngestError as exc:
         raise _to_http_exception(exc)
+
+
+def _mock_upload_result(*, body: bytes, mime_hint: str | None) -> UploadResult:
+    """Return a synthetic UploadResult for mock-mode demos.
+
+    The hash, page count, and timestamps are real (computed from the
+    actual bytes). The document_id and job_id are deterministic per
+    upload so the chat UI can echo them back.
+    """
+    import hashlib
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    sha = hashlib.sha256(body).hexdigest()
+    if (mime_hint or "").startswith("application/pdf") or body[:5] == b"%PDF-":
+        try:
+            import io
+            from pypdf import PdfReader  # type: ignore[import-not-found]
+            page_count = max(1, len(PdfReader(io.BytesIO(body), strict=False).pages))
+        except Exception:
+            page_count = 1
+    else:
+        page_count = 1
+
+    deterministic = _uuid.UUID(sha[:32])
+    return UploadResult(
+        document_id=f"mock-doc-{sha[:12]}",
+        sha256=sha,
+        page_count=page_count,
+        status=JobState.QUEUED,
+        job_id=deterministic,
+        enqueued_at=datetime.now(tz=timezone.utc),
+        byte_size=len(body),
+    )
 
 
 async def _read_body_capped(upload: UploadFile, cap_bytes: int) -> bytes:

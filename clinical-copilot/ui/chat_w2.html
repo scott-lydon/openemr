@@ -195,10 +195,14 @@ function readBootstrap() {
     try { token = sessionStorage.getItem('copilot:task_token') || null; } catch (e) {}
   }
   // Strip the token from the visible URL after reading.
+  // NOTE: must use window.history explicitly because we declare
+  // ``let history`` at module scope below, which would otherwise
+  // shadow the global and produce a temporal-dead-zone reference
+  // error here (this function runs before ``let history`` is reached).
   if (params.has('token')) {
     params.delete('token');
     const cleaned = params.toString();
-    history.replaceState({}, '', cleaned ? '#' + cleaned : window.location.pathname + window.location.search);
+    window.history.replaceState({}, '', cleaned ? '#' + cleaned : window.location.pathname + window.location.search);
   }
   return { token, patient };
 }
@@ -275,21 +279,54 @@ function seedFromCopilotCache() {
   const lines = [];
   if (cached.snap) {
     const d = cached.snap.demographics || {};
-    lines.push(`**Patient:** ${cached.snap.patient_id} · ${d.age ?? '?'} y/o · ${d.sex_at_birth ?? '?'}`);
-    const probs = (cached.snap.problems || []).map(p => p.text || p.code || '').filter(Boolean);
+    const ageSex = [];
+    if (d.age != null) ageSex.push(`${d.age} y/o`);
+    if (d.sex_at_birth) ageSex.push(d.sex_at_birth);
+    const headParts = [cached.snap.patient_id];
+    if (ageSex.length) headParts.push(ageSex.join(' · '));
+    lines.push(`**Patient:** ${headParts.join(' · ')}`);
+
+    // Snapshot uses ``active_problems``, not ``problems``. Each item
+    // carries .label (text) and optional .icd10 / .snomed.
+    const probs = (cached.snap.active_problems || [])
+      .map(p => p.label || p.icd10 || p.snomed || '')
+      .filter(Boolean);
     if (probs.length) lines.push(`**Active problems:** ${probs.join(', ')}`);
-    const meds = (cached.snap.medications || []).map(m => m.name || m.code || '').filter(Boolean);
+
+    // Medications: .label is often empty in the snapshot — fall back
+    // to a "<rxnorm> <dose>" rendering so the user sees something
+    // concrete. Real labels (e.g. "Metformin 500 mg") render when present.
+    const meds = (cached.snap.medications || [])
+      .map(m => {
+        if (m.label && m.label.trim()) return m.label;
+        const parts = [];
+        if (m.rxnorm) parts.push(`RxNorm:${m.rxnorm}`);
+        if (m.dose) parts.push(m.dose);
+        return parts.join(' ');
+      })
+      .filter(Boolean);
     if (meds.length) lines.push(`**Medications:** ${meds.join(', ')}`);
-    const allergies = (cached.snap.allergies || []).map(a => a.substance || a.code || '').filter(Boolean);
+
+    const allergies = (cached.snap.allergies || [])
+      .map(a => a.substance || a.label || a.code || '')
+      .filter(Boolean);
     if (allergies.length) lines.push(`**Allergies:** ${allergies.join(', ')}`);
+
     const pres = cached.snap.presenting || {};
     const sym = (pres.symptoms || []).filter(Boolean);
     if (sym.length) lines.push(`**Presenting:** ${sym.join('; ')}`);
   }
   if (cached.dx && cached.dx.candidates) {
+    // The pairwise comparator emits .label (candidate name) and
+    // .max_likelihood_pct (the highest per-symptom likelihood). Older
+    // shapes used .probability_pct / .candidate_label; tolerate both.
     const top = cached.dx.candidates.slice(0, 3)
-      .map(c => `${c.candidate_label || c.candidate || ''} (${Math.round((c.probability_pct ?? 0))}%)`)
-      .filter(s => s.trim());
+      .map(c => {
+        const name = c.label || c.candidate_label || c.candidate || '';
+        const pct = c.max_likelihood_pct ?? c.probability_pct ?? 0;
+        return name ? `${name} (${Math.round(pct)}%)` : '';
+      })
+      .filter(Boolean);
     if (top.length) lines.push(`**Top diagnostic considerations:** ${top.join(', ')}`);
   }
   if (cached.ce && (cached.ce.chart_error_flags || []).length) {
@@ -401,7 +438,10 @@ function renderContextLine() {
   const cached = readCopilotCache();
   if (cached && cached.snap) {
     const d = cached.snap.demographics || {};
-    $('ctx-line').textContent = `${PATIENT_ID} · ${d.age ?? '?'} y/o · ${d.sex_at_birth ?? '?'}`;
+    const parts = [PATIENT_ID];
+    if (d.age != null) parts.push(`${d.age} y/o`);
+    if (d.sex_at_birth) parts.push(d.sex_at_birth);
+    $('ctx-line').textContent = parts.join(' · ');
   } else {
     $('ctx-line').textContent = PATIENT_ID || 'No patient bound';
   }
@@ -488,15 +528,16 @@ async function sendTurn() {
 
 function renderAgentBody(j) {
   // /chat with purpose=follow_up_question may return { message } directly,
-  // or one of the structured shapes (candidates / chart_error_flags).
-  // Render whatever is most useful.
+  // or one of the structured shapes. Field names match the snapshot
+  // shape: label / max_likelihood_pct / rationale (not candidate_label /
+  // probability_pct / explanation).
   if (j.message) return String(j.message);
   if (j.candidates && j.candidates.length) {
     const lines = ['**Diagnostic considerations:**'];
     for (const c of j.candidates.slice(0, 5)) {
-      const label = c.candidate_label || c.candidate || '';
-      const pct = c.probability_pct ?? 0;
-      const expl = c.explanation || '';
+      const label = c.label || c.candidate_label || c.candidate || '(no label)';
+      const pct = c.max_likelihood_pct ?? c.probability_pct ?? 0;
+      const expl = c.rationale || c.explanation || '';
       lines.push(`• ${label} (${Math.round(pct)}%) — ${expl}`);
     }
     return lines.join('\n');
@@ -504,7 +545,7 @@ function renderAgentBody(j) {
   if (j.chart_error_flags && j.chart_error_flags.length) {
     const lines = ['**Chart-error flags:**'];
     for (const f of j.chart_error_flags) {
-      lines.push(`• ${f.flag || f.kind}: ${f.explanation || ''}`);
+      lines.push(`• ${f.label || f.flag || f.kind || ''}: ${f.rationale || f.explanation || ''}`);
     }
     return lines.join('\n');
   }
@@ -534,8 +575,13 @@ async function uploadFiles(files) {
     form.append('doc_type', 'lab_pdf');
     form.append('source', 'upload');
     try {
+      // The documents route accepts the bare UUID (FastAPI cannot
+      // path-match a slash inside a URL-encoded path parameter). Strip
+      // the ``Patient/`` prefix here; the handler reconstructs the
+      // canonical reference internally.
+      const uuid = (PATIENT_ID || '').replace(/^Patient\//, '');
       const resp = await authFetch(
-        `${SIDECAR_BASE}/agent-api/v1/patients/${encodeURIComponent(PATIENT_ID)}/documents`,
+        `${SIDECAR_BASE}/agent-api/v1/patients/${encodeURIComponent(uuid)}/documents`,
         { method: 'POST', body: form }
       );
       if (!resp.ok) {
