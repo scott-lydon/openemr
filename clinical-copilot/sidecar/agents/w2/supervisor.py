@@ -79,14 +79,28 @@ _PREFLIGHT_PATTERNS: Final[tuple[tuple[re.Pattern[str], IntentKind], ...]] = (
     (
         re.compile(
             r"\b(should I|recommend|guideline|screening|preventive|target|"
-            r"goal|when to (start|stop|treat)|criteria)\b",
+            r"goal|when to (start|stop|treat)|criteria|first[- ]?line|"
+            r"workup|treatment|management|therapy|next step|differential)\b",
             re.IGNORECASE,
         ),
         IntentKind.GUIDELINE_LOOKUP,
     ),
     (
         re.compile(
-            r"\b(chart|history|past|prior|previous|trend)\b",
+            # Broad chart-question patterns. Anything that asks about
+            # the patient's documented conditions / meds / allergies /
+            # demographics / history routes to chart_review, which
+            # surfaces the chart context already loaded in the chat.
+            r"\b(chart|history|past|prior|previous|trend|"
+            r"disease|diseases|diagnos(is|es|ed)|condition(s)?|"
+            r"medication(s)?|drug(s)?|prescription(s)?|on (any|her|his|their)?|takes|taking|"
+            r"allerg(y|ies|ic)|"
+            r"problem(s)?|"
+            r"presenting|symptom(s)?|complain(t|s)?|chief|"
+            r"vital(s)?|bp|blood pressure|temperature|pulse|"
+            r"age|sex|gender|"
+            r"what (does|is|are)|"
+            r"who is|how old)\b",
             re.IGNORECASE,
         ),
         IntentKind.CHART_REVIEW,
