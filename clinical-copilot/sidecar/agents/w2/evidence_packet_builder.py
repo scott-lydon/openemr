@@ -15,7 +15,10 @@ What the builder does:
    ``GUIDELINE_LOOKUP`` and there is at least one snippet, the builder
    emits one ``ClinicalClaim`` per snippet so the verifier can
    downstream check each citation. The text is a short summary line so
-   the formatter has something to display.
+   the formatter has something to display. Same emission path fires for
+   ``CHART_REVIEW`` so chart-finding snippets (sourced from the patient
+   snapshot, with synthetic ``chart:`` chunk_ids) become user-visible
+   claims with provenance back to the OpenEMR row that produced them.
 3. **Deduplicate.** Two claims with identical text are merged; the
    merged claim carries the union of citations.
 
@@ -35,7 +38,11 @@ def build_evidence_packet(state: GraphState) -> list[ClinicalClaim]:
     """
     claims: list[ClinicalClaim] = list(state.raw_claims)
 
-    if state.intent_kind is IntentKind.GUIDELINE_LOOKUP and state.snippets:
+    snippet_emitting_intents = (
+        IntentKind.GUIDELINE_LOOKUP,
+        IntentKind.CHART_REVIEW,
+    )
+    if state.intent_kind in snippet_emitting_intents and state.snippets:
         for snippet in state.snippets:
             text = _summarize_snippet_text(snippet.text)
             claims.append(
