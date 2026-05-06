@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .fhir_client import FhirClient
+from .fhir_client import DEFAULT_RESOURCE_QUERIES, FhirClient
 from .models import (
     Allergy,
     Demographics,
@@ -28,10 +28,19 @@ from .models import (
     VitalObservation,
 )
 from .reconciler import reconcile
+from .shard_selection import ShardSelection
 
 
 class SnapshotService:
-    """Builds the patient snapshot from OpenEMR's FHIR API."""
+    """Builds the patient snapshot from OpenEMR's FHIR API.
+
+    The fan-out resource set is configurable per call so the chat
+    handler can ask for only the shards a given turn needs (selective
+    retrieval). Passing ``shards=None`` preserves the legacy behaviour
+    of pulling every default shard — the eval suite and any caller
+    that does not yet know about :class:`ShardSelection` keeps
+    working.
+    """
 
     def __init__(self, fhir_client: FhirClient) -> None:
         self._fhir = fhir_client
@@ -42,9 +51,28 @@ class SnapshotService:
         *,
         presenting: Presenting | None = None,
         demographics: Demographics | None = None,
+        shards: ShardSelection | None = None,
     ) -> PatientSnapshot:
+        # Resolve the query set. ``ShardSelection.ordered`` is empty
+        # only if the caller built one with an empty ``names`` set —
+        # that is a programming error, so fail loud rather than
+        # silently fan-out the full default set (which would defeat
+        # the whole point of selective retrieval).
+        if shards is None:
+            queries = DEFAULT_RESOURCE_QUERIES
+        else:
+            queries = shards.ordered
+            if not queries:
+                raise ValueError(
+                    "ShardSelection resolved to an empty query set. "
+                    "Either pass shards=None to keep the default "
+                    "fan-out, or include at least one shard name. "
+                    f"Selection.names was {sorted(shards.names)!r}; "
+                    f"DEFAULT_RESOURCE_QUERIES has "
+                    f"{[n for n, _ in DEFAULT_RESOURCE_QUERIES]!r}."
+                )
         bundles_by_name: dict[str, Mapping[str, Any] | None] = {}
-        results = await self._fhir.fan_out(patient_uuid)
+        results = await self._fhir.fan_out(patient_uuid, queries=queries)
         for name, result in results.items():
             bundles_by_name[name] = result.bundle
         return reconcile(
