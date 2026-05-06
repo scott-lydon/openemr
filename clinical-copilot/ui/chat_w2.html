@@ -390,9 +390,29 @@ function appendMessageElement(msg) {
 }
 
 function renderMarkdownLight(text) {
-  return escapeHtml(text)
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\n/g, '<br>');
+  // Order matters: pull out [label](url) BEFORE escapeHtml so the URL
+  // doesn't get HTML-escaped into uselessness. Then escape the rest.
+  const linkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  const tokens = [];
+  let lastIndex = 0;
+  let m;
+  while ((m = linkRe.exec(text)) !== null) {
+    tokens.push({type: 'text', value: text.slice(lastIndex, m.index)});
+    tokens.push({type: 'link', label: m[1], url: m[2]});
+    lastIndex = m.index + m[0].length;
+  }
+  tokens.push({type: 'text', value: text.slice(lastIndex)});
+
+  return tokens.map(tok => {
+    if (tok.type === 'link') {
+      return `<a href="${escapeHtml(tok.url)}" target="_blank" rel="noopener" ` +
+             `style="color:inherit;text-decoration:underline dotted;">` +
+             `${escapeHtml(tok.label)}</a>`;
+    }
+    return escapeHtml(tok.value)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>');
+  }).join('');
 }
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, ch => ({
@@ -507,7 +527,23 @@ async function sendTurn() {
       throw new Error(`status ${resp.status}: ${body.slice(0, 240)}`);
     }
     const j = await resp.json();
-    const assistantText = j.rendered_text || JSON.stringify(j, null, 2);
+    let assistantText = j.rendered_text || JSON.stringify(j, null, 2);
+    // Inject hyperlinks for citation chunk_ids that the route mapped
+    // to deep-link or signed-preview URLs. The renderer outputs each
+    // citation as ``[N] <chunk_id>``; we add a `↗` link after the id.
+    const links = j.citation_links || {};
+    if (Object.keys(links).length) {
+      const lines = assistantText.split('\n').map(line => {
+        for (const [cid, url] of Object.entries(links)) {
+          // Only replace exact occurrences at the end of citation list lines.
+          if (line.endsWith(' ' + cid) || line === cid) {
+            return line + ' [view ↗](' + url + ')';
+          }
+        }
+        return line;
+      });
+      assistantText = lines.join('\n');
+    }
     const meta = [
       `intent: ${j.intent_kind}`,
       `decision: ${j.decision_path}`,

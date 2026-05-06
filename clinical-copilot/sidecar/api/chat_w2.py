@@ -73,6 +73,11 @@ class W2ChatResponse(BaseModel):
     worker_sequence: list[str]
     refused: bool
     span_attributes: dict[str, object]
+    # Map from the chunk_id / DocumentReference citation surfaced in
+    # rendered_text to a UUID stored in the citations table. The chat
+    # UI uses these to build click-through links to the bbox preview
+    # endpoint.
+    citation_links: dict[str, str] = {}
 
 
 @router.post("/agent-api/v1/w2-chat", response_model=W2ChatResponse)
@@ -111,12 +116,18 @@ async def post_w2_chat(
     )
 
     response = result.state.response
+    citation_links = _materialize_citations(
+        response=response,
+        encounter_id=state.encounter_id,
+        patient_id=state.patient_id,
+    )
     return W2ChatResponse(
         rendered_text=result.rendered_text,
         decision_path=result.state.decision_path.value,
         intent_kind=result.state.intent_kind.value,
         worker_sequence=[w.value for w in result.state.worker_sequence],
         refused=bool(response and response.refusal_reason),
+        citation_links=citation_links,
         span_attributes=dict(result.state.span_attributes),
     )
 
@@ -310,6 +321,108 @@ def _build_nodes(*, allow_mock: bool) -> GraphNodes:
         pairwise_comparer=real_pairwise,
         citation_resolver=LiveCitationResolver(),
     )
+
+
+def _materialize_citations(
+    *,
+    response,
+    encounter_id: str,
+    patient_id: str,
+) -> dict[str, str]:
+    """Insert one row per ``DocumentReference`` citation in the response
+    packet, then return a {chunk_id_or_doc_ref: signed_preview_url} map.
+
+    Guideline citations (chunk_ids that match a row in
+    ``guideline_chunks``) get a deep-link to the source URL recorded in
+    that row. DocumentReference citations get a signed preview URL that
+    the bbox renderer serves.
+
+    Failures are logged but do not break the chat — the chat still
+    returns the rendered text; the citation chips just lose their link.
+    """
+    if response is None:
+        return {}
+
+    seen: set[str] = set()
+    for claim in response.claims:
+        for cid in claim.citations:
+            seen.add(cid)
+    if not seen:
+        return {}
+
+    out: dict[str, str] = {}
+    try:
+        import uuid as _uuid
+        import psycopg
+        from sidecar.config import get_settings
+        from sidecar.citations.signing import mint_signed_url
+
+        settings = get_settings()
+        url = (settings.database_url or "").replace(
+            "postgresql+psycopg://", "postgresql://", 1
+        )
+        if not url:
+            return {}
+        with psycopg.connect(url) as conn:
+            with conn.cursor() as cur:
+                # Build the guideline chunk → anchor URL map once.
+                cur.execute(
+                    "SELECT chunk_id, anchor_url, source_id, section_path "
+                    "FROM guideline_chunks WHERE chunk_id = ANY(%s);",
+                    (list(seen),),
+                )
+                for chunk_id, anchor_url, _, _ in cur.fetchall():
+                    out[str(chunk_id)] = str(anchor_url)
+
+                # For each DocumentReference citation, insert a row in
+                # the citations table with a default bbox over the top
+                # of page 0 (real bbox lands when the live VLM
+                # extractor runs). Then mint a signed URL.
+                for cid in seen:
+                    if not cid.startswith("DocumentReference/"):
+                        continue
+                    source_id = cid.split("/", 1)[1]
+                    citation_uuid = _uuid.uuid4()
+                    bbox_json = (
+                        '{"page":0,"x0":0.10,"y0":0.10,'
+                        '"x1":0.90,"y1":0.32}'
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO citations (
+                            citation_id, encounter_id, patient_id,
+                            source_type, source_id, page, section,
+                            field_or_chunk_id, quote_or_value, bbox_json
+                        ) VALUES (
+                            %s, %s, %s, 'DocumentReference', %s,
+                            0, NULL, %s, %s, %s::jsonb
+                        );
+                        """,
+                        (
+                            str(citation_uuid),
+                            encounter_id,
+                            patient_id,
+                            source_id,
+                            cid,
+                            "extracted field (preview)",
+                            bbox_json,
+                        ),
+                    )
+                    signed = mint_signed_url(
+                        base_url=(
+                            f"http://localhost:8801/agent-api/v1/citations/"
+                            f"{citation_uuid}/preview.png"
+                        ),
+                        citation_id=str(citation_uuid),
+                        patient_id=patient_id,
+                        signing_key=settings.bff_jwt_signing_key,
+                        ttl_seconds=settings.task_token_lifetime_seconds,
+                    )
+                    out[cid] = signed
+            conn.commit()
+    except Exception as exc:
+        logger.warning("citation materialization failed: %s", exc)
+    return out
 
 
 def _row_to_hit(row, method_label: str):
