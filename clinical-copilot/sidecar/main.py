@@ -87,7 +87,18 @@ def _wire_ingest_dependencies(app: FastAPI, settings: object) -> None:
     connection, OpenEMR token, ClamAV daemon socket) is acquired per
     request. Tests override these in pytest fixtures via
     ``app.dependency_overrides``.
+
+    Mock-mode short-circuit: when ``COPILOT_ALLOW_MOCK=true`` every dep
+    yields a no-op placeholder so the documents route can run without
+    Postgres / ClamAV / OpenEMR FHIR. The route's mock branch never
+    touches them; the dep just needs to resolve without raising so
+    FastAPI enters the handler.
     """
+    import os as _os
+
+    def _mock_active() -> bool:
+        return _os.environ.get("COPILOT_ALLOW_MOCK", "").lower() == "true"
+
     # Virus scanner: configured from COPILOT_VIRUS_SCAN env (defaults to
     # clamd; switch to "stub" for dev/test).
     app.dependency_overrides[get_scanner] = default_scanner
@@ -95,6 +106,10 @@ def _wire_ingest_dependencies(app: FastAPI, settings: object) -> None:
     # FHIR client: a fresh httpx client per request, mounted at the
     # OpenEMR FHIR base URL.
     def _fhir_client() -> FhirDocumentRefClient:
+        if _mock_active():
+            # Return a stub the handler will not actually invoke.
+            from sidecar.ingest.fhir_client import StubFhirClient
+            return StubFhirClient()
         # An OAuth-backed access token is acquired upstream; for the
         # initial Phase 2 wiring we use a per-request anonymous bearer.
         # Phase 3 will replace this with the OpenEMR token cache call
@@ -109,6 +124,10 @@ def _wire_ingest_dependencies(app: FastAPI, settings: object) -> None:
     app.dependency_overrides[get_fhir_client] = _fhir_client
 
     def _queue_connection():
+        if _mock_active():
+            # Yield a sentinel; the handler's mock branch ignores it.
+            yield None
+            return
         # Yield a per-request connection from the configured DATABASE_URL.
         # The contextmanager is consumed by FastAPI's dependency
         # mechanism via the generator yield protocol.
