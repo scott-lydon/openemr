@@ -24,3 +24,7 @@ evals/results/*.json
 # regress_self_test.py backup files (sandbox sometimes leaves them)
 *.self_test_backup
 *.self_test_backup.removed
+# generated test fixtures (run scripts/generate_test_fixtures.py to recreate)
+evals/golden_w2/fixtures/labs/
+evals/golden_w2/fixtures/intake/
+evals/golden_w2/fixtures/adversarial/
