@@ -486,13 +486,19 @@ async function sendTurn() {
   }
 
   try {
-    const resp = await authFetch(`${SIDECAR_BASE}/chat`, {
+    // Use the Week 2 multi-agent graph route. It runs the supervisor's
+    // deterministic preflight + LLM judge fallback, the worker
+    // sequence (intake_extractor / evidence_retriever / pairwise_comparer
+    // depending on intent), the evidence packet builder, the verifier,
+    // and the response formatter — and returns the rendered text plus
+    // the supervisor's decision metadata for display.
+    const resp = await authFetch(`${SIDECAR_BASE}/agent-api/v1/w2-chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         patient_id: PATIENT_ID,
-        purpose: 'follow_up_question',
-        message: agentMessage,
+        user_question: agentMessage,
+        attached_document_ids: userMsg.attachments.map(a => a.document_id),
       }),
     });
     clearTypingIndicator();
@@ -501,11 +507,17 @@ async function sendTurn() {
       throw new Error(`status ${resp.status}: ${body.slice(0, 240)}`);
     }
     const j = await resp.json();
-    const assistantText = renderAgentBody(j);
+    const assistantText = j.rendered_text || JSON.stringify(j, null, 2);
+    const meta = [
+      `intent: ${j.intent_kind}`,
+      `decision: ${j.decision_path}`,
+      `workers: ${(j.worker_sequence || []).join(' → ') || '—'}`,
+      j.refused ? 'refused' : null,
+    ].filter(Boolean).join(' · ');
     const assistantMsg = {
       role: 'assistant',
       text: assistantText,
-      meta: buildMetaLine(j),
+      meta: meta,
     };
     history.push(assistantMsg);
     saveHistory(history);

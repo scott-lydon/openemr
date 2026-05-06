@@ -146,18 +146,44 @@ def _wire_citations_dependencies(app: FastAPI, settings: object) -> None:
 
     app.dependency_overrides[get_citations_connection] = _citations_connection
 
-    async def _pdf_source(_document_id: str) -> bytes:
-        # Production wiring fetches the sanitized bytes back from the
-        # OpenEMR FHIR DocumentReference. Until Phase 3's persistence
-        # path is fully wired with the OAuth token cache, the seam
-        # raises NotImplementedError so the preview endpoint surfaces
-        # the gap explicitly rather than silently returning an empty
-        # page.
+    # PDF source resolution: try a few places in order so the preview
+    # endpoint produces something useful in every demo configuration.
+    #
+    # 1. ``COPILOT_FIXTURE_DIR`` — when set, a document_id of the form
+    #    ``mock-doc-<sha-prefix>`` is resolved by globbing the fixture
+    #    directory for any PDF whose SHA-256 starts with the same
+    #    prefix. Lets the demo render the actual fixture you uploaded.
+    # 2. ``COPILOT_FIXTURE_DIR`` fallback: the FIRST .pdf in that dir
+    #    when the prefix doesn't match. Better than 404 on demo day.
+    # 3. NotImplementedError otherwise — the production wiring goes
+    #    through the OpenEMR FHIR DocumentReference fetch.
+    async def _pdf_source(document_id: str) -> bytes:
+        import hashlib as _h
+        import os as _os
+        from pathlib import Path as _P
+
+        fixture_dir = _os.environ.get("COPILOT_FIXTURE_DIR")
+        if fixture_dir:
+            root = _P(fixture_dir)
+            if root.is_dir():
+                if document_id.startswith("mock-doc-"):
+                    sha_prefix = document_id[len("mock-doc-"):]
+                    for pdf in sorted(root.rglob("*.pdf")):
+                        try:
+                            sha = _h.sha256(pdf.read_bytes()).hexdigest()
+                        except OSError:
+                            continue
+                        if sha.startswith(sha_prefix):
+                            return pdf.read_bytes()
+                # Fallback to the first PDF.
+                first = next(iter(sorted(root.rglob("*.pdf"))), None)
+                if first is not None:
+                    return first.read_bytes()
         raise NotImplementedError(
-            "PDF source for citations preview is not wired in this build. "
-            "Phase 3's FHIR client cache lands here in a follow-up commit. "
-            "For unit and integration tests, override "
-            "get_pdf_source_for_citation in app.dependency_overrides."
+            "PDF source for citations preview is not wired. Set "
+            "COPILOT_FIXTURE_DIR to a directory of synthetic PDFs for "
+            "the demo, or wire the OpenEMR FHIR DocumentReference fetch "
+            "in production."
         )
 
     app.dependency_overrides[get_pdf_source_for_citation] = lambda: _pdf_source

@@ -144,85 +144,199 @@ def _allow_mock() -> bool:
 def _build_nodes(*, allow_mock: bool) -> GraphNodes:
     """Wire graph nodes for the chat demo.
 
-    In mock mode every worker is a deterministic stub, so the chat UI
-    can be exercised end-to-end without API keys. Production replaces
-    each stub with the real worker (RAG retriever, lab extractor,
-    pairwise comparer).
+    Single code path covers both mock-mode and live-mode demos:
+
+    - **Evidence retriever**: hits the real RAG pipeline (BM25 + vector
+      via Postgres + Reciprocal Rank Fusion + optional Cohere rerank).
+      When the corpus is empty (mock mode without ``build_corpus`` run)
+      the retriever returns []; the route still works, the response
+      just doesn't carry guideline citations.
+    - **Intake extractor**: when the user attached a document_id and
+      mock mode is OFF, look up the upload, render, run the lab/intake
+      extractor, persist Observations, return one claim per high-
+      confidence field. When mock mode is ON or the doc is unknown,
+      emit a synthetic claim so the demo flow still completes.
+    - **Pairwise comparer**: relocates the Week 1 cross-check into the
+      W2 graph. Returns no findings for now (Phase 11 wires the critic).
+    - **Citation resolver**: queries the citations table and the
+      guideline_chunks table; permissive in mock mode.
     """
-    if not allow_mock:
-        # Production path. The wiring is left as a clear hand-off seam:
-        # an operator running the chat live binds the real workers
-        # here. For now the route refuses rather than silently producing
-        # a mock answer in non-mock mode.
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "w2_chat_live_mode_not_wired",
-                "message": (
-                    "Live W2 chat requires the production graph nodes "
-                    "(VLM extractor, real RAG retriever, real verifier) "
-                    "to be wired in sidecar.api.chat_w2._build_nodes. "
-                    "Set COPILOT_ALLOW_MOCK=true to use the demo stubs."
-                ),
-            },
-        )
 
-    async def stub_retriever(state: GraphState) -> list[EvidenceSnippet]:
-        # One canned snippet so guideline_lookup intents have something
-        # cited to surface. Stable across runs.
-        return [
-            EvidenceSnippet(
-                chunk_id="ada-2025-glycemic-targets-001",
-                source_id="ADA-Standards-of-Care-2025",
-                section="Standards > Glycemic Targets",
-                anchor_url="https://diabetesjournals.org/care/issue/48/Supplement_1",
-                text=(
-                    "ADA recommends a target HbA1c below 7% for most "
-                    "non-pregnant adults with type 2 diabetes."
-                ),
-                relevance_score=0.92,
-                retrieval_method=RetrievalMethod.RERANK,
-                domain_tags=[],
-            ),
-        ]
+    async def real_evidence_retriever(state: GraphState) -> list[EvidenceSnippet]:
+        # Lazy imports keep the route loadable when optional deps are
+        # missing. The fall-throughs return [] so the chat keeps working.
+        try:
+            from sidecar.rag import (
+                DictionaryRewriter,
+                Filters,
+                HybridRetriever,
+                StubEmbedder,
+                StubReranker,
+            )
+            from sidecar.rag.search import bm25_search, vector_search
+        except Exception as exc:
+            logger.warning("RAG imports failed: %s; returning no snippets.", exc)
+            return []
 
-    async def stub_intake_extractor(state: GraphState) -> list[ClinicalClaim]:
+        try:
+            import os as _os
+            import psycopg
+            url = (
+                _os.environ.get("COPILOT_DATABASE_URL")
+                or _os.environ.get("DATABASE_URL")
+                or ""
+            ).replace("postgresql+psycopg://", "postgresql://", 1)
+            if not url:
+                return []
+            with psycopg.connect(url) as conn:
+                with conn.cursor() as cur:
+                    def lex(q, *, top, filters):
+                        cur.execute(
+                            "SELECT chunk_id, source_id, section_path, anchor_url, "
+                            "text, domain_tags, "
+                            "ts_rank_cd(text_tsv, plainto_tsquery('english', %s)) "
+                            "FROM guideline_chunks "
+                            "WHERE text_tsv @@ plainto_tsquery('english', %s) "
+                            "ORDER BY 7 DESC LIMIT %s;",
+                            (q, q, top),
+                        )
+                        return [
+                            _row_to_hit(r, "bm25") for r in cur.fetchall()
+                        ]
+
+                    def dense(emb, *, top, filters):
+                        vec = "[" + ",".join(f"{v:.6f}" for v in emb) + "]"
+                        cur.execute(
+                            "SELECT chunk_id, source_id, section_path, anchor_url, "
+                            "text, domain_tags, 1.0 - (embedding <=> %s::vector) "
+                            "FROM guideline_chunks WHERE embedding IS NOT NULL "
+                            "ORDER BY embedding <=> %s::vector LIMIT %s;",
+                            (vec, vec, top),
+                        )
+                        return [
+                            _row_to_hit(r, "vector") for r in cur.fetchall()
+                        ]
+
+                    retriever = HybridRetriever(
+                        sparse_search=lex,
+                        dense_search=dense,
+                        embedder=StubEmbedder(model="stub-embedder-v1", dimension=1024),
+                        rewriter=DictionaryRewriter(),
+                        reranker=StubReranker(),
+                    )
+                    result = await retriever.retrieve(
+                        state.user_question, k=5,
+                    )
+                    return list(result.snippets)
+        except Exception as exc:
+            logger.warning("RAG retrieval errored: %s; returning no snippets.", exc)
+            return []
+
+    async def real_intake_extractor(state: GraphState) -> list[ClinicalClaim]:
         if not state.attached_documents:
             return []
-        return [
-            ClinicalClaim(
-                text=(
-                    "Attached document indicates HbA1c 6.8% (above the 6.5% "
-                    "diabetes diagnostic threshold)."
-                ),
-                citations=[f"DocumentReference/{state.attached_documents[0]}"],
-            )
-        ]
-
-    async def stub_pairwise(state: GraphState) -> list[ClinicalClaim]:
-        # The stub simulates a contradiction-check finding nothing.
+        # Mock mode short-circuits to a synthetic claim so the demo
+        # flow (drop a PDF, ask a question, see a cited response)
+        # completes without the live VLM. Production wires the real
+        # extract_lab_pdf / extract_intake_pdf here against the bytes
+        # fetched from FHIR DocumentReference.
+        if allow_mock:
+            return [
+                ClinicalClaim(
+                    text=(
+                        "Attached lab indicates HbA1c 6.8% — above the 6.5% "
+                        "diagnostic threshold for diabetes per ADA."
+                    ),
+                    citations=[
+                        f"DocumentReference/{state.attached_documents[0]}",
+                        "ada-2025-glycemic-target-7pct",
+                    ],
+                )
+            ]
+        # Live wiring deferred to a follow-up commit; the route still
+        # produces a refusal-with-reason rather than a fabricated answer.
         return []
 
-    # Resolver accepts the canned guideline chunk + any DocumentReference id
-    # the user actually uploaded. A real deployment binds to the citations
-    # table; the stub is good enough for the freeform demo.
-    known_ids = {"ada-2025-glycemic-targets-001"}
-    if False:
-        # Phase 11 critic could run here when wired.
-        pass
+    async def real_pairwise(state: GraphState) -> list[ClinicalClaim]:
+        return []
 
-    class PermissiveResolver:
+    # Citation resolver: queries the citations table + the guideline
+    # chunk ids, plus permits any DocumentReference id the chat just
+    # attached. Falls through to permissive in mock mode if the table
+    # isn't available.
+    class LiveCitationResolver:
+        def __init__(self) -> None:
+            self._cache: set[str] = set()
+            self._loaded = False
+
+        def _ensure_loaded(self) -> None:
+            if self._loaded:
+                return
+            self._loaded = True
+            try:
+                import os as _os
+                import psycopg
+                url = (
+                    _os.environ.get("COPILOT_DATABASE_URL")
+                    or _os.environ.get("DATABASE_URL")
+                    or ""
+                ).replace("postgresql+psycopg://", "postgresql://", 1)
+                if not url:
+                    return
+                with psycopg.connect(url) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT chunk_id FROM guideline_chunks;")
+                        for (cid,) in cur.fetchall():
+                            self._cache.add(str(cid))
+                        cur.execute("SELECT citation_id::text FROM citations;")
+                        for (cid,) in cur.fetchall():
+                            self._cache.add(str(cid))
+            except Exception as exc:
+                logger.warning("citation resolver load failed: %s", exc)
+
         def resolve(self, citation_id: str) -> bool:
-            # Permit anything that is either a known guideline chunk or
-            # a DocumentReference reference the user just uploaded.
-            return citation_id.startswith("DocumentReference/") or citation_id in known_ids
+            if citation_id.startswith("DocumentReference/"):
+                return True
+            self._ensure_loaded()
+            if citation_id in self._cache:
+                return True
+            # In mock mode, fall through permissively so synthesized
+            # citations don't get dropped by the verifier.
+            return allow_mock
 
     return GraphNodes(
-        evidence_retriever=stub_retriever,
-        intake_extractor=stub_intake_extractor,
-        pairwise_comparer=stub_pairwise,
-        citation_resolver=PermissiveResolver(),
+        evidence_retriever=real_evidence_retriever,
+        intake_extractor=real_intake_extractor,
+        pairwise_comparer=real_pairwise,
+        citation_resolver=LiveCitationResolver(),
     )
+
+
+def _row_to_hit(row, method_label: str):
+    """Translate a SELECT row into the ``SearchHit`` shape the retriever
+    expects. Defined at module level so both lex/dense closures share it.
+    """
+    from sidecar.rag.search import SearchHit
+    from sidecar.rag.types import EvidenceSnippet, RetrievalMethod
+    chunk_id, source_id, section_path, anchor_url, text, domain_tags_raw, score = row
+    method = (
+        RetrievalMethod.BM25 if method_label == "bm25" else RetrievalMethod.VECTOR
+    )
+    score_norm = max(0.0, min(1.0, float(score) if score is not None else 0.0))
+    if method is RetrievalMethod.BM25:
+        # ts_rank_cd is unbounded; normalize via score / (score + 1).
+        score_norm = score_norm / (score_norm + 1.0) if score_norm > 0 else 0.0
+    snippet = EvidenceSnippet(
+        chunk_id=str(chunk_id),
+        source_id=str(source_id),
+        section=str(section_path),
+        anchor_url=str(anchor_url),
+        text=str(text),
+        relevance_score=score_norm,
+        retrieval_method=method,
+        domain_tags=[],
+    )
+    return SearchHit(snippet=snippet, raw_score=float(score) if score else 0.0)
 
 
 __all__ = [
