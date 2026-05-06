@@ -135,12 +135,18 @@ def open_connection(
             "COPILOT_DATABASE_URL is not set; cannot open queue connection."
         )
 
+    # SQLAlchemy-style ``postgresql+psycopg://`` dialect URLs are common
+    # in this repo's settings; psycopg's libpq parser rejects the
+    # ``+psycopg`` suffix. Strip it for the direct-connect path.
+    if url.startswith("postgresql+psycopg://"):
+        url = url.replace("postgresql+psycopg://", "postgresql://", 1)
+
     try:
         with psycopg.connect(url, autocommit=False) as conn:
             yield conn  # type: ignore[misc]
     except Exception as exc:
         raise UploadQueueError(
-            f"failed to open Postgres connection: "
+            f"failed to open Postgres connection (url scheme={url.split('://')[0] if '://' in url else 'unknown'!r}): "
             f"{type(exc).__name__}: {exc!s}"
         ) from exc
 
