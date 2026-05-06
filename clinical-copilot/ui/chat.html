@@ -225,6 +225,12 @@
     <h1>Clinical Co-Pilot</h1>
     <div class="ctx" id="ctx-line">Loading patient context…</div>
   </div>
+  <button id="open-chat-btn" class="back-btn" type="button"
+          title="Open the conversation view for this patient"
+          style="display:none;">💬 Chat</button>
+  <button id="refresh-btn" class="back-btn" type="button"
+          title="Re-run the AI calls for this patient"
+          style="display:none;">↻ Refresh</button>
   <select id="patient" aria-label="Patient" title="Patient"></select>
 </header>
 
@@ -352,6 +358,7 @@ function renderTable(rows, columns, provenanceOf, emptyMsg) {
 }
 
 function renderSnapshot(snap) {
+  cachePartial('snap', snap);
   const d = snap.demographics || {};
   $('ctx-line').textContent = `${snap.patient_id} · ${d.age ?? '?'} y/o · ${d.sex_at_birth ?? '?'}`;
 
@@ -536,6 +543,7 @@ function renderDx(resp) {
   document.querySelectorAll('.view-toggle button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   if (view === 'per-symptom') renderDxPerSymptom(resp);
   else renderDxAggregated(resp);
+  cachePartial('dx', resp);
 }
 
 function flagCard(f) {
@@ -567,6 +575,7 @@ function renderCe(resp) {
   html += renderDroppedDetails(resp.dropped);
   $('ce-body').innerHTML = html;
   setMeta('ce-meta', resp);
+  cachePartial('ce', resp);
 }
 
 function setMeta(elId, resp) {
@@ -591,8 +600,79 @@ function renderDroppedDetails(dropped) {
   </details>`;
 }
 
+// ─── Result caching ──────────────────────────────────────────────────
+// Cache snapshot + diagnostic + chart-error per patient in sessionStorage
+// so navigating away (to the chat window, to OpenEMR, etc.) and back does
+// NOT re-run the LLM. The "Refresh" button is the explicit way to re-run.
+const CACHE_PREFIX = 'copilot:results:';
+let _activeCachePatient = null;
+
+function cacheKey(patientId) { return CACHE_PREFIX + patientId; }
+
+function cachePartial(slot, data) {
+  if (!_activeCachePatient) return;
+  try {
+    const key = cacheKey(_activeCachePatient);
+    const prior = JSON.parse(sessionStorage.getItem(key) || '{}');
+    prior[slot] = data;
+    prior._stored_at = Date.now();
+    sessionStorage.setItem(key, JSON.stringify(prior));
+  } catch (e) { /* sessionStorage full or unavailable; non-fatal */ }
+}
+
+function readCache(patientId) {
+  try {
+    const raw = sessionStorage.getItem(cacheKey(patientId));
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+function clearCache(patientId) {
+  try { sessionStorage.removeItem(cacheKey(patientId)); } catch (e) {}
+}
+
+function applyCachedResults(patientId) {
+  const cached = readCache(patientId);
+  if (!cached) return false;
+  if (cached.snap) renderSnapshot(cached.snap);
+  if (cached.dx) renderDx(cached.dx);
+  if (cached.ce) renderCe(cached.ce);
+  // Render only what is available — partials are fine.
+  return Boolean(cached.snap && cached.dx && cached.ce);
+}
+
+// ─── Chat window launcher ────────────────────────────────────────────
+// Opens chat_w2.html for the active patient in the SAME tab so the
+// session storage (cached results + conversation history) is shared.
+// Token + patient land in the URL fragment exactly the way the OpenEMR
+// launch endpoint hands them to chat.html, so the chat page reuses the
+// same auth path without a separate dev-token mint.
+function openChatWindow() {
+  const patientId = _activeCachePatient;
+  if (!patientId) return;
+  const params = new URLSearchParams();
+  params.set('patient', patientId);
+  if (TASK_TOKEN) params.set('token', TASK_TOKEN);
+  // Stash the token under a session key the chat page can also read,
+  // so a stripped-from-URL token still survives the navigation.
+  if (TASK_TOKEN) {
+    try { sessionStorage.setItem('copilot:task_token', TASK_TOKEN); } catch (e) {}
+  }
+  window.location.assign('/w2/#' + params.toString());
+}
+
 async function runForPatient(patientId) {
   if (!patientId) return;
+  _activeCachePatient = patientId;
+  $('open-chat-btn').style.display = '';
+  $('refresh-btn').style.display = '';
+
+  // Cache hit: render and skip the LLM calls. The user clicks Refresh
+  // when they want fresh results.
+  if (applyCachedResults(patientId)) {
+    return;
+  }
+
   // Reset AI cards.
   $('dx-verdict').textContent = ''; $('dx-verdict').className = 'verdict';
   $('ce-verdict').textContent = ''; $('ce-verdict').className = 'verdict';
@@ -721,6 +801,17 @@ window.addEventListener('hashchange', () => {
     $('patient').value = patient;
     runForPatient(patient);
   }
+});
+
+// Header button wiring. `openChatWindow` and `runForPatient` are defined
+// above; nothing in the closure changes when the user clicks.
+$('open-chat-btn').addEventListener('click', openChatWindow);
+$('refresh-btn').addEventListener('click', () => {
+  if (!_activeCachePatient) return;
+  clearCache(_activeCachePatient);
+  // Re-run by calling runForPatient again. The cleared cache means the
+  // function falls through to the live AI calls instead of the cache hit.
+  runForPatient(_activeCachePatient);
 });
 
 applyUrlAndLoad();
