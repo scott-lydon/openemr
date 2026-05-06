@@ -408,6 +408,13 @@ def _materialize_citations(
                             bbox_json,
                         ),
                     )
+                    # 1-hour TTL for the preview URL. Bearer tokens are
+                    # tighter (5 min) because they grant scope-bearing
+                    # access; a citation preview URL only resolves to
+                    # the bbox PNG for this specific citation_id, so a
+                    # longer TTL is fine and dramatically improves the
+                    # demo experience (the user can re-click the link
+                    # an hour into a recording without re-launching).
                     signed = mint_signed_url(
                         base_url=(
                             f"http://localhost:8801/agent-api/v1/citations/"
@@ -416,7 +423,7 @@ def _materialize_citations(
                         citation_id=str(citation_uuid),
                         patient_id=patient_id,
                         signing_key=settings.bff_jwt_signing_key,
-                        ttl_seconds=settings.task_token_lifetime_seconds,
+                        ttl_seconds=3600,
                     )
                     out[cid] = signed
             conn.commit()
