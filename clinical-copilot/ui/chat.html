@@ -44,6 +44,20 @@
   header.app .title-block { flex: 1; min-width: 0; }
   header.app h1 { margin: 0 0 2px; font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
   header.app .ctx { font-size: 13px; opacity: .82; font-weight: 400; }
+  /* Smaller, monospace ID line so the long FHIR UUID is clearly the
+     resource identifier and never gets confused with the patient's
+     name or demographics. */
+  header.app .ctx-id {
+    font-size: 11px; opacity: .65; font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    margin-top: 2px; word-break: break-all;
+  }
+  header.app .ctx-id .label {
+    text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+    margin-right: 6px; opacity: .85;
+  }
+  /* When the patient picker is hidden via ``hidden``, also collapse
+     it from the flex layout so the right-aligned buttons sit flush. */
+  header.app select[hidden] { display: none; }
   header.app select {
     background: rgba(255,255,255,.95); border: 1px solid rgba(255,255,255,.4);
     color: var(--ink); border-radius: 8px; padding: 7px 10px;
@@ -222,8 +236,9 @@
 <header class="app">
   <a class="back-btn" href="javascript:void(0)" id="copilot-back-btn" title="Back to OpenEMR">&larr; Back</a>
   <div class="title-block">
-    <h1>Clinical Co-Pilot</h1>
+    <h1 id="patient-name">Clinical Co-Pilot</h1>
     <div class="ctx" id="ctx-line">Loading patient context…</div>
+    <div class="ctx ctx-id" id="patient-id-line"></div>
   </div>
   <button id="open-chat-btn" class="back-btn" type="button"
           title="Open the conversation view for this patient"
@@ -231,7 +246,15 @@
   <button id="refresh-btn" class="back-btn" type="button"
           title="Re-run the AI calls for this patient"
           style="display:none;">↻ Refresh</button>
-  <select id="patient" aria-label="Patient" title="Patient"></select>
+  <!--
+    The patient picker is a dev-only convenience for switching between
+    bundled fixture patients without re-launching from OpenEMR. In
+    production the patient is bound by the launch token, so the picker
+    has nothing to switch between and we keep it hidden via
+    ``hidden`` (toggled on by ``loadPatients`` only when the
+    /patients endpoint actually returns a list).
+  -->
+  <select id="patient" aria-label="Patient" title="Patient" hidden></select>
 </header>
 
 <main class="wrap">
@@ -325,25 +348,45 @@ function showAuthBanner(message) {
 }
 
 async function loadPatients() {
-  // /patients only exists in mock/demo mode; the real launch flow knows
-  // the patient already (it's in the hash) so we can skip the picker.
+  // The /patients endpoint only exists in mock/demo mode; the real
+  // launch flow binds the patient to the launch token, so in
+  // production there is nothing for this picker to switch between.
+  // We start with the dropdown hidden via the ``hidden`` attribute
+  // (set in the markup) and ONLY reveal it when /patients actually
+  // returns a non-empty list. That way production users never see a
+  // dev-only "(picker disabled)" placeholder leaking through, and dev
+  // users still get the convenience of fixture-switching.
   const sel = $('patient');
   if (!sel) return;
+  let res;
   try {
-    const res = await authFetch(`${sidecarBase}/patients`);
-    if (!res.ok) {
-      sel.innerHTML = '<option value="">(picker disabled in production)</option>';
-      return;
-    }
-    const items = await res.json();
-    sel.innerHTML = '';
-    if (!items.length) { sel.innerHTML = '<option value="">(none)</option>'; return; }
-    for (const id of items) {
-      const opt = document.createElement('option');
-      opt.value = id; opt.textContent = id;
-      sel.appendChild(opt);
-    }
-  } catch (e) { sel.innerHTML = '<option>error</option>'; }
+    res = await authFetch(`${sidecarBase}/patients`);
+  } catch (e) {
+    // Network error — keep the picker hidden, but log so dev users
+    // can diagnose. Production users do not need to know.
+    console.debug('clinical-copilot: /patients fetch failed', e);
+    return;
+  }
+  if (!res.ok) {
+    // Endpoint disabled (production) or auth-rejected — silently
+    // leave the picker hidden.
+    return;
+  }
+  let items;
+  try {
+    items = await res.json();
+  } catch (e) {
+    console.debug('clinical-copilot: /patients returned non-JSON', e);
+    return;
+  }
+  if (!Array.isArray(items) || !items.length) return;
+  sel.innerHTML = '';
+  for (const id of items) {
+    const opt = document.createElement('option');
+    opt.value = id; opt.textContent = id;
+    sel.appendChild(opt);
+  }
+  sel.hidden = false;
 }
 
 function renderTable(rows, columns, provenanceOf, emptyMsg) {
@@ -360,7 +403,33 @@ function renderTable(rows, columns, provenanceOf, emptyMsg) {
 function renderSnapshot(snap) {
   cachePartial('snap', snap);
   const d = snap.demographics || {};
-  $('ctx-line').textContent = `${snap.patient_id} · ${d.age ?? '?'} y/o · ${d.sex_at_birth ?? '?'}`;
+
+  // Header h1: real patient name when we have it, otherwise the
+  // product name. Avoids the previous header that prominently
+  // displayed the bare FHIR UUID.
+  const nameEl = $('patient-name');
+  if (nameEl) nameEl.textContent = d.name && String(d.name).trim() ? d.name : 'Clinical Co-Pilot';
+
+  // Subtitle: only the demographic facts we actually have. We never
+  // fabricate "?" placeholders — a missing field is omitted so the
+  // line is honest about what's known. The order is age, sex,
+  // date-of-birth so the most clinically useful fact comes first.
+  const parts = [];
+  if (Number.isFinite(d.age)) parts.push(`${d.age} y/o`);
+  if (d.sex_at_birth) parts.push(escape(String(d.sex_at_birth)));
+  if (d.dob) parts.push(`DOB ${escape(String(d.dob))}`);
+  $('ctx-line').textContent = parts.length ? parts.join(' · ') : 'Demographics unavailable';
+
+  // Patient ID line: clearly LABELED so users know the long
+  // hyphenated string is a FHIR resource identifier, not a UI bug.
+  // Demo patients use a synthetic UUID built from their numeric pid
+  // (e.g. ``87413000-0000-4000-8000-000000000000``); real patients
+  // would carry a fully-random v4 UUID. Either way, the line is
+  // labeled and rendered in monospace so its purpose is obvious.
+  const idEl = $('patient-id-line');
+  if (idEl) {
+    idEl.innerHTML = '<span class="label">Patient ID</span>' + escape(snap.patient_id || '');
+  }
 
   const pres = snap.presenting || {};
   const sym = (pres.symptoms || []).map(s => `<li>${escape(s)}</li>`).join('');

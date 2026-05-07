@@ -43,6 +43,18 @@
   header.app .title-block { flex: 1; min-width: 0; }
   header.app h1 { margin: 0 0 2px; font-size: 17px; font-weight: 600; }
   header.app .ctx { font-size: 12px; opacity: .82; }
+  /* Smaller, monospace ID line so the long FHIR UUID is clearly the
+     resource identifier and never gets confused with the patient's
+     name or demographics. */
+  header.app .ctx-id {
+    font-size: 10px; opacity: .65;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    margin-top: 2px; word-break: break-all;
+  }
+  header.app .ctx-id .label {
+    text-transform: uppercase; letter-spacing: .08em;
+    font-weight: 600; margin-right: 6px; opacity: .85;
+  }
   header.app .clear-btn {
     background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.20);
     color: #fff; border-radius: 8px; padding: 7px 12px; font: inherit; font-size: 12px;
@@ -282,9 +294,21 @@ function seedFromCopilotCache() {
     const ageSex = [];
     if (d.age != null) ageSex.push(`${d.age} y/o`);
     if (d.sex_at_birth) ageSex.push(d.sex_at_birth);
-    const headParts = [cached.snap.patient_id];
+    // Prefer the human name when the FHIR Patient resource gave us
+    // one. Fall back to the FHIR resource id only when no name is
+    // present, so the chat seed never leads with a long opaque UUID.
+    const headParts = [];
+    if (d.name && String(d.name).trim()) {
+      headParts.push(String(d.name).trim());
+    } else {
+      headParts.push(cached.snap.patient_id);
+    }
     if (ageSex.length) headParts.push(ageSex.join(' · '));
     lines.push(`**Patient:** ${headParts.join(' · ')}`);
+    // Always cite the FHIR resource id explicitly so the doctor can
+    // sanity-check that the Co-Pilot is talking about the right
+    // chart. Labelled so the long UUID never looks like a UI bug.
+    lines.push(`**Patient ID:** \`${cached.snap.patient_id}\``);
 
     // Snapshot uses ``active_problems``, not ``problems``. Each item
     // carries .label (text) and optional .icd10 / .snomed.
@@ -455,15 +479,45 @@ function renderAttached() {
 
 // ─── Header context ──────────────────────────────────────────────────
 function renderContextLine() {
+  // Prefer the human name + age/sex on the visible context line,
+  // and surface the FHIR resource id (a long UUID for demo patients)
+  // as a labelled secondary line so the user never sees a bare UUID
+  // as the only header text. Falls back gracefully when demographics
+  // are missing — we omit unknown fields rather than rendering "?"
+  // placeholders that look like a bug.
   const cached = readCopilotCache();
-  if (cached && cached.snap) {
-    const d = cached.snap.demographics || {};
-    const parts = [PATIENT_ID];
-    if (d.age != null) parts.push(`${d.age} y/o`);
-    if (d.sex_at_birth) parts.push(d.sex_at_birth);
-    $('ctx-line').textContent = parts.join(' · ');
+  const ctxEl = document.getElementById('ctx-line');
+  if (!ctxEl) return;
+
+  // Build / locate the secondary id line just below ctx-line. Done
+  // imperatively here rather than via static HTML so chat_w2.html
+  // stays compatible with sessions that lack the cached snapshot.
+  let idEl = document.getElementById('patient-id-line');
+  if (!idEl) {
+    idEl = document.createElement('div');
+    idEl.id = 'patient-id-line';
+    idEl.className = 'ctx ctx-id';
+    ctxEl.parentNode.insertBefore(idEl, ctxEl.nextSibling);
+  }
+
+  const d = (cached && cached.snap && cached.snap.demographics) || {};
+  const ctxParts = [];
+  if (d.name && String(d.name).trim()) ctxParts.push(String(d.name).trim());
+  if (d.age != null) ctxParts.push(`${d.age} y/o`);
+  if (d.sex_at_birth) ctxParts.push(d.sex_at_birth);
+  ctxEl.textContent = ctxParts.length
+    ? ctxParts.join(' · ')
+    : (PATIENT_ID ? 'Demographics unavailable' : 'No patient bound');
+
+  if (PATIENT_ID) {
+    idEl.innerHTML = '';
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = 'Patient ID';
+    idEl.appendChild(label);
+    idEl.appendChild(document.createTextNode(' ' + PATIENT_ID));
   } else {
-    $('ctx-line').textContent = PATIENT_ID || 'No patient bound';
+    idEl.textContent = '';
   }
 }
 
