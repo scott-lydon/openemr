@@ -262,18 +262,32 @@
 <body>
 <script>
   /* Theme bootstrap. Synchronous so the page never paints in the wrong
-   * palette. Reads `theme=modern` from the URL hash (set by chat.html's
-   * openChatWindow when the diagnostic considerations view itself was
-   * already in modern theme), and applies data-theme="modern" to <html>.
+   * palette.
+   *
+   * Resolution order (matches chat.html):
+   *   1. localStorage 'copilot:theme' — the clinician's explicit
+   *      choice from a prior visit (toggle button on either page).
+   *   2. URL fragment ?theme=modern — set by chat.html's
+   *      openChatWindow when the diagnostic considerations view
+   *      was already in modern theme.
+   *
+   * localStorage wins so a clinician who toggled to light doesn't
+   * get yanked back to dark when they re-enter the chat.
    */
   (function applyTheme() {
     try {
+      var stored = null;
+      try { stored = window.localStorage.getItem('copilot:theme'); } catch (e) { /* private mode */ }
+      if (stored === 'modern' || stored === 'light') {
+        if (stored === 'modern') document.documentElement.dataset.theme = 'modern';
+        return;
+      }
       var params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
       if (params.get('theme') === 'modern') {
         document.documentElement.dataset.theme = 'modern';
       }
     } catch (err) {
-      console.warn('[copilot:chat] could not parse theme from hash:', err);
+      console.warn('[copilot:chat] could not parse theme from hash/storage:', err);
     }
   })();
 </script>
@@ -284,6 +298,13 @@
     <h1>Chat with the Co-Pilot</h1>
     <div class="ctx" id="ctx-line">Loading patient context…</div>
   </div>
+  <!--
+    Theme toggle. Mirrors the one on chat.html. Glyph reflects the
+    NEXT state (☀ when in dark mode = "click to go light").
+  -->
+  <button id="theme-toggle-btn" class="back-btn" type="button"
+          title="Toggle dark / light theme"
+          aria-label="Toggle dark or light theme">🌙</button>
   <button class="clear-btn" id="clear-btn" title="Clear this conversation">Clear</button>
 </header>
 
@@ -940,6 +961,38 @@ $('back-btn').addEventListener('click', (e) => {
   if (PATIENT_ID) params.set('patient', PATIENT_ID);
   if (TASK_TOKEN) params.set('token', TASK_TOKEN);
   window.location.assign('/' + (params.toString() ? '#' + params.toString() : ''));
+});
+
+/*
+ * Theme toggle (mirrors chat.html). Glyph reflects the NEXT click —
+ * ☀ when in dark = "click to go light", 🌙 when in light = "click
+ * to go dark". Persists to localStorage 'copilot:theme' so the
+ * choice survives reloads and re-launches. The bootstrap script at
+ * the top of the page reads the same key.
+ */
+function syncW2ThemeButtonGlyph() {
+  const isDark = document.documentElement.dataset.theme === 'modern';
+  $('theme-toggle-btn').textContent = isDark ? '☀' : '🌙';
+  $('theme-toggle-btn').setAttribute(
+    'title',
+    isDark ? 'Switch to light theme' : 'Switch to dark theme'
+  );
+}
+syncW2ThemeButtonGlyph();
+$('theme-toggle-btn').addEventListener('click', () => {
+  const html = document.documentElement;
+  const nextIsDark = html.dataset.theme !== 'modern';
+  if (nextIsDark) {
+    html.dataset.theme = 'modern';
+  } else {
+    delete html.dataset.theme;
+  }
+  try {
+    window.localStorage.setItem('copilot:theme', nextIsDark ? 'modern' : 'light');
+  } catch (e) {
+    console.warn('[copilot:chat] could not persist theme choice:', e);
+  }
+  syncW2ThemeButtonGlyph();
 });
 
 $('clear-btn').addEventListener('click', () => {

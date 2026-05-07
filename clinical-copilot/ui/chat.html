@@ -41,6 +41,22 @@
     display: inline-flex; align-items: center; gap: 6px; transition: background .15s;
   }
   .back-btn:hover { background: rgba(255,255,255,.22); }
+  /*
+   * Disabled state for header buttons (the chat button before a
+   * patient has loaded). Muted background, no hover bump, default
+   * cursor — clinically obvious that the action isn't ready yet
+   * without ambiguity about whether it's a link or button.
+   */
+  .back-btn:disabled,
+  .back-btn[disabled] {
+    background: rgba(255,255,255,.06);
+    color: rgba(255,255,255,.55);
+    cursor: not-allowed;
+  }
+  .back-btn:disabled:hover,
+  .back-btn[disabled]:hover {
+    background: rgba(255,255,255,.06);
+  }
   header.app .title-block { flex: 1; min-width: 0; }
   header.app h1 { margin: 0 0 2px; font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
   header.app .ctx { font-size: 13px; opacity: .82; font-weight: 400; }
@@ -369,7 +385,24 @@
    * future engineer can spot it without instrumentation.
    */
   (function applyTheme() {
+    /*
+     * Resolution order:
+     *   1. localStorage 'copilot:theme' — the clinician explicitly
+     *      clicked the toggle in a prior visit. Their choice persists.
+     *   2. URL fragment ?theme=modern — set by OpenEMR's launch.php
+     *      when the operator has switched on the modern dashboard.
+     *
+     * localStorage wins over the URL fragment so a clinician who
+     * explicitly chose light mode doesn't get yanked back into dark
+     * every time they re-launch from OpenEMR.
+     */
     try {
+      var stored = null;
+      try { stored = window.localStorage.getItem('copilot:theme'); } catch (e) { /* private mode */ }
+      if (stored === 'modern' || stored === 'light') {
+        if (stored === 'modern') document.documentElement.dataset.theme = 'modern';
+        return;
+      }
       var hash = window.location.hash.replace(/^#/, '');
       var params = new URLSearchParams(hash);
       var theme = params.get('theme');
@@ -377,7 +410,7 @@
         document.documentElement.dataset.theme = 'modern';
       }
     } catch (err) {
-      console.warn('[copilot] could not parse theme from hash:', err);
+      console.warn('[copilot] could not parse theme from hash/storage:', err);
     }
   })();
 </script>
@@ -388,9 +421,24 @@
     <div class="ctx" id="ctx-line">Loading patient context…</div>
     <div class="ctx ctx-id" id="patient-id-line"></div>
   </div>
+  <!--
+    Chat button is now visible from page load (was previously
+    `display:none` until runForPatient ran). When there's no patient
+    context yet, the button is `disabled`; runForPatient enables it
+    once a patient is bound. This way the clinician sees the surface
+    exists even before AI calls return.
+  -->
   <button id="open-chat-btn" class="back-btn" type="button"
           title="Open the conversation view for this patient"
-          style="display:none;">💬 Chat</button>
+          disabled>💬 Chat</button>
+  <!--
+    Theme toggle. Shows ☀ in modern (dark) mode, 🌙 in light mode.
+    Click flips the data-theme attribute on <html> and persists the
+    choice to localStorage so it survives reloads / re-launches.
+  -->
+  <button id="theme-toggle-btn" class="back-btn" type="button"
+          title="Toggle dark / light theme"
+          aria-label="Toggle dark or light theme">🌙</button>
   <button id="refresh-btn" class="back-btn" type="button"
           title="Re-run the AI calls for this patient"
           style="display:none;">↻ Refresh</button>
@@ -887,7 +935,10 @@ function openChatWindow() {
 async function runForPatient(patientId) {
   if (!patientId) return;
   _activeCachePatient = patientId;
-  $('open-chat-btn').style.display = '';
+  // The chat button starts visible-but-disabled (so the clinician
+  // sees the affordance from page load); flip it to enabled once we
+  // know which patient the conversation is bound to.
+  $('open-chat-btn').disabled = false;
   $('refresh-btn').style.display = '';
 
   // Cache hit: render and skip the LLM calls. The user clicks Refresh
@@ -1029,6 +1080,51 @@ window.addEventListener('hashchange', () => {
 // Header button wiring. `openChatWindow` and `runForPatient` are defined
 // above; nothing in the closure changes when the user clicks.
 $('open-chat-btn').addEventListener('click', openChatWindow);
+
+/*
+ * Theme toggle.
+ *
+ * Flips the data-theme attribute on <html> between 'modern' (dark)
+ * and unset (light), updates the button glyph, and persists the
+ * choice to localStorage. The bootstrap script at the top of the
+ * file reads the same key on next load so the user's choice
+ * survives reloads and re-launches from OpenEMR.
+ *
+ * Why localStorage and not a cookie: this is purely UI state; no
+ * server-side code reads it; cookies would be sent on every fetch
+ * for nothing.
+ *
+ * Why update the glyph here rather than via CSS: the glyph is the
+ * "next state" hint (☀ when in dark = "click to go light"), which
+ * is JS-state-bound. CSS pseudo-element approaches couple the
+ * glyph to the data-theme value but obscure the click semantic.
+ */
+function syncThemeButtonGlyph() {
+  const isDark = document.documentElement.dataset.theme === 'modern';
+  // Glyph reflects the action the click WILL take, not the current
+  // state — clinicians read it as "click to switch to <icon>".
+  $('theme-toggle-btn').textContent = isDark ? '☀' : '🌙';
+  $('theme-toggle-btn').setAttribute(
+    'title',
+    isDark ? 'Switch to light theme' : 'Switch to dark theme'
+  );
+}
+syncThemeButtonGlyph();
+$('theme-toggle-btn').addEventListener('click', () => {
+  const html = document.documentElement;
+  const nextIsDark = html.dataset.theme !== 'modern';
+  if (nextIsDark) {
+    html.dataset.theme = 'modern';
+  } else {
+    delete html.dataset.theme;
+  }
+  try {
+    window.localStorage.setItem('copilot:theme', nextIsDark ? 'modern' : 'light');
+  } catch (e) {
+    console.warn('[copilot] could not persist theme choice:', e);
+  }
+  syncThemeButtonGlyph();
+});
 
 // "Back" closes this Co-Pilot tab when it was opened by OpenEMR's launch
 // button (window.opener present) and falls back to navigating to OpenEMR
