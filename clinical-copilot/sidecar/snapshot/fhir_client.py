@@ -61,6 +61,11 @@ class FhirResult:
 # ``clinicalStatus.coding[].code`` is also faster — half the
 # round-trips, and the response is bounded by chart size.
 DEFAULT_RESOURCE_QUERIES: tuple[tuple[str, str], ...] = (
+    # Patient demographics. Queried as a search (?_id=) rather than
+    # GET /Patient/{pid} so the response is a Bundle that the
+    # reconciler's existing ``_bundle_entries`` helper can read
+    # uniformly with every other shard.
+    ("patient", "Patient?_id={pid}"),
     ("conditions", "Condition?patient={pid}"),
     ("medications", "MedicationRequest?patient={pid}"),
     ("allergies", "AllergyIntolerance?patient={pid}"),

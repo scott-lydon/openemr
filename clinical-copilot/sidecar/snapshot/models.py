@@ -68,6 +68,11 @@ class Demographics(BaseModel):
     sex_at_birth: str | None = None
     weight_kg: float | None = None
     height_cm: float | None = None
+    # Display fields populated from the FHIR Patient resource. Optional
+    # so existing fixture-based snapshots that pre-date this field still
+    # validate without modification.
+    name: str | None = None
+    dob: date | None = None
 
 
 class Problem(BaseModel):
