@@ -168,10 +168,29 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _codeable_label(code: Mapping[str, Any]) -> str:
+    """Extract a human-readable label from a FHIR CodeableConcept.
+
+    OpenEMR's FHIR mapper at this version commonly leaves ``code.text``
+    empty and surfaces the human-readable name in ``coding[].display``.
+    A bare ``code.get("text") or ""`` therefore yields an empty label
+    on real OpenEMR data, which then composes into garbled f-strings
+    like ``"= 7.2 %"`` on lab cards. Walk the canonical fallback
+    chain (text → first display → first code) before giving up.
+    """
+    codings = code.get("coding", []) or []
+    return (
+        code.get("text")
+        or next((c.get("display") for c in codings if c.get("display")), None)
+        or next((c.get("code") for c in codings if c.get("code")), None)
+        or ""
+    )
+
+
 def _problem_from_condition(resource: Mapping[str, Any]) -> tuple[Problem, list[QualityFlag]]:
     flags: list[QualityFlag] = []
     code = resource.get("code", {}) or {}
-    label = code.get("text") or ""
+    label = _codeable_label(code)
     icd10, snomed = _coding_first(code.get("coding", []))
     if not icd10 and label.lower() in _ICD10_LOOKUP:
         icd10 = _ICD10_LOOKUP[label.lower()]
@@ -324,7 +343,7 @@ def _medication_from_request(resource: Mapping[str, Any]) -> Medication:
 
 def _allergy_from_resource(resource: Mapping[str, Any]) -> Allergy:
     code = resource.get("code", {}) or {}
-    label = code.get("text") or ""
+    label = _codeable_label(code)
     rxnorm = next(
         (c["code"] for c in code.get("coding", []) if "rxnorm" in c.get("system", "").lower()),
         None,
@@ -362,7 +381,7 @@ def _allergy_from_resource(resource: Mapping[str, Any]) -> Allergy:
 
 def _vital_from_observation(resource: Mapping[str, Any]) -> VitalObservation | None:
     code = resource.get("code", {}) or {}
-    label = code.get("text") or ""
+    label = _codeable_label(code)
     loinc = next(
         (c["code"] for c in code.get("coding", []) if "loinc" in c.get("system", "").lower()),
         None,
@@ -392,7 +411,7 @@ def _vital_from_observation(resource: Mapping[str, Any]) -> VitalObservation | N
 
 def _lab_from_observation(resource: Mapping[str, Any]) -> LabObservation | None:
     code = resource.get("code", {}) or {}
-    label = code.get("text") or ""
+    label = _codeable_label(code)
     loinc = next(
         (c["code"] for c in code.get("coding", []) if "loinc" in c.get("system", "").lower()),
         None,

@@ -870,6 +870,12 @@ function openChatWindow() {
   const params = new URLSearchParams();
   params.set('patient', patientId);
   if (TASK_TOKEN) params.set('token', TASK_TOKEN);
+  // Carry the theme through to chat_w2.html so the conversational view
+  // matches the diagnostic considerations view rather than dropping the
+  // user back into a light theme mid-flow.
+  if (document.documentElement.dataset.theme === 'modern') {
+    params.set('theme', 'modern');
+  }
   // Stash the token under a session key the chat page can also read,
   // so a stripped-from-URL token still survives the navigation.
   if (TASK_TOKEN) {
