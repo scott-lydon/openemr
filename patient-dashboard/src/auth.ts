@@ -25,9 +25,18 @@ import NextAuth, { type Session } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 import { env } from "@/lib/env";
 
-const SCOPES = [
+// Scopes we request on the initial authorize. `openid` + `fhirUser`
+// give us OIDC + the user's FHIR identity; `offline_access` gets us a
+// refresh token; the `user/*` scopes cover every FHIR resource the
+// dashboard cards consume.
+//
+// `profile` is intentionally OMITTED. OpenEMR's authorize endpoint
+// accepts it, but its refresh handler rejects it with
+// `invalid_scope: Check the profile scope`, which makes every refresh
+// fail. Skipping it costs us nothing — Auth.js doesn't need profile
+// claims for the dashboard.
+const AUTHORIZE_SCOPES = [
   "openid",
-  "profile",
   "fhirUser",
   "offline_access",
   "user/Patient.read",
@@ -39,6 +48,23 @@ const SCOPES = [
   "user/CareTeam.read",
   "user/Practitioner.read",
 ].join(" ");
+
+// Scopes we send on refresh. Subset of AUTHORIZE_SCOPES — only the API
+// surface, not the OIDC primitives. `openid`/`fhirUser`/`offline_access`
+// are one-shot ceremony scopes and OpenEMR rejects them on refresh.
+const REFRESH_SCOPES = [
+  "user/Patient.read",
+  "user/Condition.read",
+  "user/MedicationRequest.read",
+  "user/AllergyIntolerance.read",
+  "user/Observation.read",
+  "user/Encounter.read",
+  "user/CareTeam.read",
+  "user/Practitioner.read",
+].join(" ");
+
+// Backwards-compat alias for the original constant name.
+const SCOPES = AUTHORIZE_SCOPES;
 
 type ExtendedJWT = JWT & {
   accessToken?: string;
@@ -77,7 +103,7 @@ async function refreshAccessToken(token: ExtendedJWT): Promise<ExtendedJWT> {
         refresh_token: token.refreshToken,
         client_id: env.OPENEMR_CLIENT_ID,
         client_secret: env.OPENEMR_CLIENT_SECRET,
-        scope: SCOPES,
+        scope: REFRESH_SCOPES,
       }),
     });
 
@@ -127,10 +153,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       authorization: {
         params: {
           scope: SCOPES,
-          // Force a fresh login each time the dashboard sends the user
-          // through OAuth so a stale silent SSO doesn't pin them to a
-          // wrong account in a multi-clinician workstation.
-          prompt: "login",
+          // Silent SSO: when the clinician is already logged in to
+          // OpenEMR (the same browser session), OpenEMR returns the
+          // auth code without showing a login form. This is the whole
+          // point of OIDC inside the OpenEMR shell — clicking the
+          // Dashboard tab should NOT bounce the clinician through a
+          // second username/password prompt.
+          //
+          // (If a multi-clinician workstation needs to force a fresh
+          // login, the operator can append &prompt=login to the
+          // sign-in URL or sign out of OpenEMR itself.)
         },
       },
       // OpenEMR's discovery doc is fine, but checks on `at_hash` and
