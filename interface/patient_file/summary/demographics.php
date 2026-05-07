@@ -89,6 +89,38 @@ if (isset($_GET['set_pid'])) {
     }
 }
 
+/*
+ * Modernized presentation layer hand-off.
+ *
+ * When the global `patient_dashboard_modern_url` is set, redirect the
+ * Dashboard tab to the Next.js reimplementation served at that URL.
+ * The OpenEMR top-level shell (top nav, patient header bar, tab strip)
+ * sits outside this iframe, so the redirect only swaps the dashboard
+ * pane — the rest of the OpenEMR UX is unchanged.
+ *
+ * Escape hatch: append `?legacy=1` to the dashboard URL to bypass the
+ * redirect and render the original PHP dashboard. Useful while the
+ * modern app is still proving itself in production.
+ *
+ * Why a redirect rather than a nested iframe: the Dashboard tab is
+ * already an iframe inside OpenEMR's main app. Adding another iframe
+ * around the modern dashboard would be an iframe-in-iframe-in-shell,
+ * which costs an extra navigation round-trip and complicates auth.
+ *
+ * See patient-dashboard/PATIENT_DASHBOARD_MIGRATION.md for the full
+ * rationale and the framework-choice defense.
+ */
+$modernDashboardUrl = trim((string)($GLOBALS['patient_dashboard_modern_url'] ?? ''));
+if (
+    $modernDashboardUrl !== ''
+    && !empty($pid)
+    && empty($_GET['legacy'])
+) {
+    $target = rtrim($modernDashboardUrl, '/') . '/patient/by-pid/' . urlencode((string)$pid);
+    header('Location: ' . $target, true, 302);
+    exit;
+}
+
 // Note: it would eventually be a good idea to move this into
 // it's own module that people can remove / add if they don't
 // want smart support in their system.
