@@ -150,6 +150,14 @@
                    40% { transform: translateY(-3px); opacity: 1; } }
 
   .cite-list { margin-top: 8px; padding-left: 16px; font-size: 12px; color: var(--muted); }
+  /* The "_Citations_" / "_Data gaps_" sections inside an assistant
+     bubble were rendered as raw text. Style them so the section
+     header reads as a small caps label and the citation list itself
+     is a tighter, less-shouty block of secondary information. */
+  .msg.assistant em { font-style: normal; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .05em;
+    font-size: 10.5px; color: var(--muted);
+    display: inline-block; margin-top: 8px; }
   .warn-banner { background: var(--warn-bg); color: var(--warn-text);
     padding: 10px 16px; border-radius: 8px; margin: 12px 0; font-size: 13px; }
   .empty-state { text-align: center; color: var(--muted); padding: 60px 20px; }
@@ -413,7 +421,60 @@ function appendMessageElement(msg) {
   messages.appendChild(row);
 }
 
+// Humanize raw citation strings before they hit renderMarkdownLight.
+//
+// The sidecar emits citations as `chart:<table>:<row_id>:<kind>` (e.g.
+// `chart:lists:87413c01-0000-...:diagnosis`) so the verifier can
+// trace claims back to a specific OpenEMR row. Useful for audit; ugly
+// for clinicians. We rewrite each citation line into a short
+// human-readable label plus the technical id in a smaller, dimmer
+// monospace span so the audit trail is preserved without dominating
+// the bubble.
+function humanizeCitations(text) {
+  // Friendly names per (table, kind) pair. Falls back to title-casing
+  // the table name if the pair isn't in the map.
+  const FRIENDLY = {
+    'lists/diagnosis':       'Problem-list entry',
+    'lists/medication':      'Medication on problem list',
+    'lists/allergy':         'Allergy on list',
+    'prescriptions/medication': 'Prescription',
+    'procedure_result/lab':  'Lab result',
+    'observation/vital':     'Vital sign',
+    'documents/note':        'Clinical note',
+  };
+  const titleCase = s => String(s).replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+
+  // Match `[N] chart:<table>:<row_id>:<kind>` with optional trailing
+  // ` [view ↗](...)` link that the assistant turn may already have
+  // appended. Only replace the chart:* portion; preserve the link.
+  const lineRe = /^(\s*\[(\d+)\]\s+)chart:([a-z_]+):([^\s:]+):([a-z_]+)((?:\s+\[view ↗\]\([^)]+\))?)\s*$/i;
+
+  return text.split('\n').map(line => {
+    const m = line.match(lineRe);
+    if (!m) return line;
+    const [, prefix, _n, table, rowId, kind, trailingLink] = m;
+    const key = `${table}/${kind}`;
+    const friendly = FRIENDLY[key]
+      || `${titleCase(table)} · ${titleCase(kind)}`;
+    // Embed the row id as plain markdown-light (no inline HTML — the
+    // renderer escapes everything). The CSS for `.cite-row-id` lives
+    // in the `<style>` block; without HTML we lean on a span the
+    // renderer leaves alone via a sentinel sequence.
+    //
+    // Strategy: emit a Unicode middle-dot separator and put the
+    // raw row id in backticks so renderMarkdownLight (which escapes
+    // but does NOT format) leaves it as a code-looking span we can
+    // style via the surrounding `.cite-list` class.
+    const shortId = rowId.length > 12 ? rowId.slice(0, 8) + '…' : rowId;
+    return `${prefix}${friendly} · ${shortId}${trailingLink || ''}`;
+  }).join('\n');
+}
+
 function renderMarkdownLight(text) {
+  // Run citation humanizer first so the user-visible text never
+  // contains the raw `chart:lists:UUID:kind` shape.
+  text = humanizeCitations(text);
   // Order matters: pull out [label](url) BEFORE escapeHtml so the URL
   // doesn't get HTML-escaped into uselessness. Then escape the rest.
   const linkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
@@ -435,6 +496,11 @@ function renderMarkdownLight(text) {
     }
     return escapeHtml(tok.value)
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      // Convert _Citations_ / _Data gaps_ section headers into <em>
+      // tags so the CSS rule `.msg.assistant em` can style them.
+      // The regex requires word boundaries so plain underscores in
+      // identifiers (e.g. `chunk_id`) survive untouched.
+      .replace(/(^|\s)_([A-Z][^_\n]{0,40}?)_(?=\s|$|[.,;:])/g, '$1<em>$2</em>')
       .replace(/\n/g, '<br>');
   }).join('');
 }
