@@ -62,6 +62,78 @@ def _bundle_entries(bundle: Mapping[str, Any] | None) -> list[Mapping[str, Any]]
     return [e["resource"] for e in bundle["entry"] if "resource" in e]
 
 
+def _human_name(name_entries: Iterable[Mapping[str, Any]]) -> str | None:
+    """Build a display name from FHIR HumanName entries.
+
+    FHIR allows multiple names with different ``use`` values
+    (official, usual, nickname, …). Prefer ``official`` then ``usual``
+    then the first entry. Falls back to ``text`` when ``family`` and
+    ``given`` are not populated.
+    """
+    entries = list(name_entries)
+    if not entries:
+        return None
+    chosen: Mapping[str, Any] | None = None
+    for use in ("official", "usual"):
+        for entry in entries:
+            if entry.get("use") == use:
+                chosen = entry
+                break
+        if chosen:
+            break
+    if chosen is None:
+        chosen = entries[0]
+    given = " ".join(g for g in (chosen.get("given") or []) if isinstance(g, str) and g)
+    family = chosen.get("family") if isinstance(chosen.get("family"), str) else None
+    if given and family:
+        return f"{given} {family}".strip()
+    if family:
+        return family
+    if given:
+        return given
+    text = chosen.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    return None
+
+
+def _demographics_from_patient_resource(
+    resource: Mapping[str, Any] | None,
+) -> Demographics:
+    """Parse a FHIR Patient resource into our Demographics model.
+
+    Returns an empty ``Demographics()`` when ``resource`` is missing
+    or malformed — callers always get a valid object so the UI never
+    has to special-case ``None`` demographics.
+    """
+    if not resource:
+        return Demographics()
+    name = _human_name(resource.get("name") or [])
+    raw_gender = resource.get("gender")
+    sex_at_birth = raw_gender.lower() if isinstance(raw_gender, str) and raw_gender else None
+    dob: date | None = None
+    raw_dob = resource.get("birthDate")
+    if isinstance(raw_dob, str) and raw_dob:
+        try:
+            dob = date.fromisoformat(raw_dob[:10])
+        except ValueError:
+            dob = None
+    age: int | None = None
+    if dob is not None:
+        today = datetime.now(tz=timezone.utc).date()
+        age = today.year - dob.year - (
+            (today.month, today.day) < (dob.month, dob.day)
+        )
+        if age < 0:
+            age = None
+    return Demographics(
+        age=age,
+        sex_at_birth=sex_at_birth,
+        name=name,
+        dob=dob,
+    )
+
+
 def _coding_first(codings: Iterable[Mapping[str, Any]]) -> tuple[str | None, str | None]:
     """Return ``(icd10, snomed)`` from a list of ``Coding`` objects."""
     icd10: str | None = None
@@ -165,9 +237,65 @@ def _problem_from_condition(resource: Mapping[str, Any]) -> tuple[Problem, list[
     return problem, flags
 
 
+def _medication_label(resource: Mapping[str, Any]) -> str:
+    """Resolve the human-readable medication name from any FHIR shape.
+
+    OpenEMR's MedicationRequest mapper does not always populate
+    ``medicationCodeableConcept.text`` — sometimes the drug name lives
+    in ``medicationCodeableConcept.coding[0].display``, in
+    ``medicationReference.display`` (FHIR-reference style), or in a
+    contained Medication's ``code.text``. Empty labels render as a
+    blank cell in the UI, so we walk every documented FHIR location
+    in priority order before falling back to the rxnorm code.
+
+    Returns the empty string only when no label could be found
+    anywhere on the resource — at which point the caller should mark
+    the medication with a ``missing_label`` quality flag rather than
+    silently render a row with just the dose.
+    """
+    code = resource.get("medicationCodeableConcept") or {}
+    text = code.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    for coding in code.get("coding") or []:
+        display = coding.get("display")
+        if isinstance(display, str) and display.strip():
+            return display.strip()
+
+    ref = resource.get("medicationReference") or {}
+    display = ref.get("display")
+    if isinstance(display, str) and display.strip():
+        return display.strip()
+
+    # FHIR allows an inline ``contained`` Medication resource. Walk
+    # the contained list and pull a label from the first one we find.
+    for contained in resource.get("contained") or []:
+        if not isinstance(contained, Mapping):
+            continue
+        if contained.get("resourceType") != "Medication":
+            continue
+        contained_code = contained.get("code") or {}
+        text = contained_code.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        for coding in contained_code.get("coding") or []:
+            display = coding.get("display")
+            if isinstance(display, str) and display.strip():
+                return display.strip()
+
+    # Last resort: use the rxnorm code itself so the row is at least
+    # identifiable. Better than an empty cell that looks like a bug.
+    for coding in code.get("coding") or []:
+        if "rxnorm" in (coding.get("system") or "").lower() and coding.get("code"):
+            return f"RxNorm:{coding['code']}"
+
+    return ""
+
+
 def _medication_from_request(resource: Mapping[str, Any]) -> Medication:
     code = resource.get("medicationCodeableConcept", {}) or {}
-    label = code.get("text") or ""
+    label = _medication_label(resource)
     rxnorm = next(
         (
             c["code"]
@@ -502,10 +630,21 @@ def reconcile(
     if presenting is None:
         presenting = _presenting_from_encounters(fhir_bundles.get("encounters"))
 
+    # Demographics priority order:
+    #   1. Caller-supplied (fixture loader, eval suite) — always wins.
+    #   2. The FHIR Patient resource we fetched in the fan-out (added
+    #      so the chat header shows real name/age/sex instead of "?").
+    #   3. Empty Demographics() so downstream code never gets None.
+    if demographics is None:
+        patient_entries = _bundle_entries(fhir_bundles.get("patient"))
+        demographics = _demographics_from_patient_resource(
+            patient_entries[0] if patient_entries else None
+        )
+
     return PatientSnapshot(
         patient_id=patient_uuid,
         snapshot_version=datetime.now(tz=timezone.utc),
-        demographics=demographics or Demographics(),
+        demographics=demographics,
         active_problems=problems,
         medications=medications,
         allergies=allergies,
