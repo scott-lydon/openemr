@@ -1,0 +1,52 @@
+# Local development compose file for the Patient Dashboard.
+#
+# This file is INDEPENDENT of OpenEMR's docker/development-easy stack.
+# It connects to OpenEMR over the host network so you can keep both
+# stacks running side by side.
+#
+# Usage:
+#   1. Boot the OpenEMR stack:
+#        cd ../docker/development-easy && docker compose up -d --wait
+#   2. Provision an OAuth client and write credentials into .env.local:
+#        bash scripts/register-oauth-client.sh
+#   3. Boot the dashboard:
+#        cd ../patient-dashboard && docker compose up -d --build
+#   4. Open http://localhost:8400/
+#
+# Production deploy: the same Dockerfile is used, but on Hetzner the
+# service is added to /opt/openemr/docker-compose.yml so it joins the
+# OpenEMR docker network and reaches OpenEMR via DNS name "openemr".
+
+services:
+  patient-dashboard:
+    build:
+      context: .
+      args:
+        # Bake the git sha into the bundle so /healthz reports it. The
+        # default falls back to "dev" if git isn't available at build
+        # time (e.g. CI without a checkout).
+        BUILD_SHA: ${BUILD_SHA:-dev}
+    image: openemr-patient-dashboard:${TAG:-dev}
+    container_name: openemr-patient-dashboard
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8400:8400"
+    env_file:
+      - .env.local
+    environment:
+      # Override OPENEMR_ISSUER and OPENEMR_FHIR_BASE inside docker so they
+      # reach the OpenEMR container over the host bridge rather than
+      # localhost (which would resolve to the dashboard container itself).
+      OPENEMR_ISSUER: ${DOCKER_OPENEMR_ISSUER:-http://host.docker.internal:8300/oauth2/default}
+      OPENEMR_FHIR_BASE: ${DOCKER_OPENEMR_FHIR_BASE:-http://host.docker.internal:8300/apis/default/fhir/}
+      AUTH_URL: ${AUTH_URL:-http://localhost:8400}
+      AUTH_TRUST_HOST: "1"
+    extra_hosts:
+      # Make host.docker.internal work on Linux as well as macOS.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8400/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

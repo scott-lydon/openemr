@@ -1,0 +1,33 @@
+# Build artefacts
+.next
+node_modules
+out
+dist
+
+# VCS
+.git
+.gitignore
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# Local env (always supplied at runtime, never baked in)
+.env
+.env.local
+.env.development
+.env.production
+.env.*.local
+
+# Logs and caches
+*.log
+.npm
+.eslintcache
+coverage
+
+# Docs that shouldn't bloat the build context
+README.md
+PATIENT_DASHBOARD_MIGRATION.md
+docs/
