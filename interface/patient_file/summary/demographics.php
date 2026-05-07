@@ -161,8 +161,94 @@ if (
         $modernEncCats[] = xl_appt_category($modernEncRow['pc_catname']);
     }
 
-    $modernTarget = rtrim($modernDashboardUrl, '/')
-        . '/patient/by-pid/' . urlencode((string)$pid);
+    /*
+     * Build the modern dashboard target URL.
+     *
+     * SMART-on-FHIR EHR launch (the silent path): mint an opaque
+     * SMART launch token bound to the active patient context, and
+     * route through the dashboard's `/launch` endpoint. The dashboard
+     * kicks off OAuth2/OIDC with `launch=&aud=&scope=launch...`, and
+     * because `oauth_ehr_launch_authorization_flow_skip` is on
+     * globally + the dashboard's OAuth client has
+     * `skip_ehr_launch_authorization_flow=1` + the clinician is
+     * already in the OpenEMR shell session, OpenEMR's
+     * AuthorizationController takes the silent path: no provider
+     * login form, no scope consent screen.
+     *
+     * Direct visitors (anyone who hits the dashboard URL outside the
+     * EMR) still get the standard OIDC sign-in via the dashboard's
+     * /login page — that's the assignment-required default
+     * authentication mechanism. SMART EHR launch is OAuth2/OIDC with
+     * a launch context indicator; both paths satisfy the
+     * "Authentication — Login via OAuth2/OpenID Connect" requirement
+     * in PATIENT_DASHBOARD_MIGRATION.md.
+     *
+     * Fallback to the legacy `/patient/by-pid/{pid}` URL if SMART
+     * token minting fails (missing UUID, missing FHIR url config,
+     * encryption error). The dashboard's middleware then bounces
+     * through /login and the user gets the standard OIDC dance —
+     * worse UX (one consent click) but still functional.
+     */
+    $modernPatientUuid = $modernPatientRow['uuid'] ?? null;
+    $modernLaunchTarget = null;
+    if (!empty($modernPatientUuid)) {
+        try {
+            $modernPatientUuidString = \OpenEMR\Common\Uuid\UuidRegistry::uuidToString(
+                $modernPatientUuid
+            );
+            $modernLaunchToken = new \OpenEMR\FHIR\SMART\SMARTLaunchToken(
+                $modernPatientUuidString
+            );
+            $modernLaunchToken->setIntent(
+                \OpenEMR\FHIR\SMART\SMARTLaunchToken::INTENT_PATIENT_DEMOGRAPHICS_DIALOG
+            );
+            $modernLaunchSerialized = $modernLaunchToken->serialize();
+            $modernFhirIssuer = (new \OpenEMR\FHIR\Config\ServerConfig())->getFhirUrl();
+            if (empty($modernFhirIssuer)) {
+                throw new \RuntimeException(
+                    'ServerConfig::getFhirUrl() returned empty; check site_addr_oath '
+                        . 'and the FHIR URL configuration. Without an issuer, the '
+                        . 'dashboard cannot complete a SMART-on-FHIR EHR launch and '
+                        . 'will fall back to the consent-screen path.'
+                );
+            }
+            $modernLaunchTarget = rtrim($modernDashboardUrl, '/')
+                . '/launch?'
+                . http_build_query([
+                    'iss' => $modernFhirIssuer,
+                    'launch' => $modernLaunchSerialized,
+                    'pid' => (string)$pid,
+                ]);
+        } catch (\Throwable $modernLaunchExc) {
+            (new \OpenEMR\Common\Logging\SystemLogger())->warning(
+                'demographics.modern_dashboard.smart_launch_mint_failed',
+                [
+                    'pid' => $pid,
+                    'error' => $modernLaunchExc->getMessage(),
+                    // Log the trace for the dev environment so the
+                    // root cause is one click away in php-log; we
+                    // still fall back to the legacy path so the user
+                    // is not blocked.
+                    'trace' => $modernLaunchExc->getTraceAsString(),
+                ]
+            );
+        }
+    } else {
+        (new \OpenEMR\Common\Logging\SystemLogger())->warning(
+            'demographics.modern_dashboard.no_patient_uuid',
+            [
+                'pid' => $pid,
+                'reason' => 'patient_data.uuid is empty for this pid; run the '
+                    . 'UUID backfill (sql/3_to_4_upgrade.sql or similar) '
+                    . 'so SMART-on-FHIR EHR launch can identify the patient.',
+            ]
+        );
+    }
+
+    $modernTarget = $modernLaunchTarget ?? (
+        rtrim($modernDashboardUrl, '/')
+        . '/patient/by-pid/' . urlencode((string)$pid)
+    );
 
     header('Content-Type: text/html; charset=utf-8');
     ?>
