@@ -54,7 +54,11 @@ import type {
   Problem,
 } from "./types";
 
-const FETCH_TIMEOUT_MS = 15_000;
+// OpenEMR's FHIR endpoint takes ~20s on the first call after a token is
+// minted (session lookup + ACL evaluation are slow on cold paths). Once a
+// token is warm the same call finishes in ~3-5s. 60s leaves headroom for
+// the cold case without making genuine network failures hang.
+const FETCH_TIMEOUT_MS = 60_000;
 
 /** Pull the bearer token off the active session, or throw if signed out. */
 async function bearerToken(): Promise<string> {
