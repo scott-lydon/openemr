@@ -157,7 +157,22 @@
   .msg.assistant em { font-style: normal; font-weight: 600;
     text-transform: uppercase; letter-spacing: .05em;
     font-size: 10.5px; color: var(--muted);
-    display: inline-block; margin-top: 8px; }
+    display: inline-block; margin-top: 10px; margin-bottom: 4px; }
+  /* Citation links should look like links — solid-underlined and
+     coloured — so the user knows they're clickable. The default
+     dotted underline used elsewhere in the bubble is too quiet for
+     a list of reference rows. */
+  .msg.assistant a[href*="set_pid="],
+  .msg.assistant a[href*="/citations/"] {
+    color: var(--accent) !important;
+    text-decoration: underline !important;
+    text-decoration-color: rgba(15,58,95,.35) !important;
+    text-underline-offset: 2px;
+  }
+  .msg.assistant a[href*="set_pid="]:hover,
+  .msg.assistant a[href*="/citations/"]:hover {
+    text-decoration-color: var(--accent) !important;
+  }
   .warn-banner { background: var(--warn-bg); color: var(--warn-text);
     padding: 10px 16px; border-radius: 8px; margin: 12px 0; font-size: 13px; }
   .empty-state { text-align: center; color: var(--muted); padding: 60px 20px; }
@@ -445,6 +460,35 @@ function humanizeCitations(text) {
   const titleCase = s => String(s).replace(/_/g, ' ')
     .replace(/\b\w/g, c => c.toUpperCase());
 
+  // Resolve the legacy OpenEMR pid for the current patient so we can
+  // build deeplinks. For demo patients the FHIR UUID was synthesised
+  // as `<pid>{padding}-0000-4000-8000-000000000000`, so the pid is
+  // the leading run of digits in the UUID. Real patients carry random
+  // UUIDs and won't match — the link logic below skips them in that
+  // case rather than emit a misleading URL.
+  // PATIENT_ID is a module-level const (set by readBootstrap from the
+  // URL fragment), so we read it directly via the closure rather than
+  // through window.PATIENT_ID.
+  const fhirId = (typeof PATIENT_ID === 'string' ? PATIENT_ID : '')
+    .replace(/^Patient\//, '');
+  const pidMatch = fhirId.match(/^(\d+)/);
+  const pid = pidMatch ? pidMatch[1] : null;
+
+  // Map (table, kind) → OpenEMR URL that lands on the patient summary
+  // when opened with ``set_pid=<pid>``. We strip the chat host's port
+  // so the link points to OpenEMR (port 80) rather than the sidecar
+  // (port 8801) the chat is served from.
+  const OPENEMR_BASE = location.protocol + '//' +
+    location.hostname.replace(/:\d+$/, '');
+  const deeplinkFor = (table, kind) => {
+    if (!pid) return null;
+    // The Documents tab shows uploaded PDFs and notes; the medical
+    // record dashboard is the safest "near the row" landing for
+    // the others.
+    const path = '/interface/patient_file/summary/demographics.php?set_pid=' + pid;
+    return OPENEMR_BASE + path;
+  };
+
   // Match `[N] chart:<table>:<row_id>:<kind>` with optional trailing
   // ` [view ↗](...)` link that the assistant turn may already have
   // appended. Only replace the chart:* portion; preserve the link.
@@ -457,17 +501,17 @@ function humanizeCitations(text) {
     const key = `${table}/${kind}`;
     const friendly = FRIENDLY[key]
       || `${titleCase(table)} · ${titleCase(kind)}`;
-    // Embed the row id as plain markdown-light (no inline HTML — the
-    // renderer escapes everything). The CSS for `.cite-row-id` lives
-    // in the `<style>` block; without HTML we lean on a span the
-    // renderer leaves alone via a sentinel sequence.
-    //
-    // Strategy: emit a Unicode middle-dot separator and put the
-    // raw row id in backticks so renderMarkdownLight (which escapes
-    // but does NOT format) leaves it as a code-looking span we can
-    // style via the surrounding `.cite-list` class.
     const shortId = rowId.length > 12 ? rowId.slice(0, 8) + '…' : rowId;
-    return `${prefix}${friendly} · ${shortId}${trailingLink || ''}`;
+    // Append a deeplink suffix so the citation row becomes a clickable
+    // anchor in renderMarkdownLight. If a trailing link is already
+    // present (signed-preview URL from j.citation_links) keep it and
+    // skip our deeplink — the existing one is more specific.
+    let suffix = trailingLink || '';
+    if (!suffix) {
+      const url = deeplinkFor(table, kind);
+      if (url) suffix = ` [open in chart ↗](${url})`;
+    }
+    return `${prefix}${friendly} · ${shortId}${suffix}`;
   }).join('\n');
 }
 
