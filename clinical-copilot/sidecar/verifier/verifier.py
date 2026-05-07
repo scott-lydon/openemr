@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from sidecar._compat import StrEnum
 from sidecar.snapshot import PatientSnapshot
 
+from .data_gap_rules import DATA_GAP_RULES
 from .rules import RuleAction, RuleHit, RuleStore
 
 
@@ -102,9 +103,13 @@ class Verifier:
         becoming the next ignored alert? Inline annotation, capped at the
         1 or 2 most clinically actionable gaps per response.").
 
-        Each gap message is built from the patient's actual snapshot so
-        the gap text is dynamic (it cites the matching active problem
-        label and the actual lab window) rather than a static string.
+        The rule set lives in
+        :mod:`sidecar.verifier.data_gap_rules` so the
+        verifier engine itself stays generic — adding a new
+        condition→required-lab pairing is one entry in that table, no
+        edits here. Each rule's ``message_template`` is formatted with
+        the patient's actual problem label and the recent-labs window
+        phrase, so the rendered gap is always dynamic per patient.
         """
         gaps: list[str] = []
 
@@ -135,24 +140,22 @@ class Verifier:
                 return "in the recent labs window"
             return f"in the labs window through {latest.date().isoformat()}"
 
-        # Gout but no recent uric acid → the gout-vs-infection
-        # differentiator from the Stage 0 narrative.
-        gout_problem = _matching_problem(("gout",))
-        if gout_problem and not _has_lab(("urate", "uric acid")):
+        for rule in DATA_GAP_RULES:
+            problem = _matching_problem(rule.condition_keywords)
+            if not problem:
+                continue
+            if _has_lab(rule.required_lab_keywords):
+                continue
             gaps.append(
-                f"no recent uric acid measured for active problem "
-                f"“{gout_problem}” — would resolve gout vs infection"
+                rule.message_template.format(
+                    problem=problem,
+                    window=_lab_window_phrase(),
+                )
             )
+            if len(gaps) >= 2:
+                break
 
-        # Diabetes but no HbA1c in the lab window.
-        dm_problem = _matching_problem(("diabetes",))
-        if dm_problem and not _has_lab(("hba1c", "a1c", "hemoglobin a1c")):
-            gaps.append(
-                f"no HbA1c measured for active problem "
-                f"“{dm_problem}” {_lab_window_phrase()}"
-            )
-
-        return gaps[:2]
+        return gaps
 
     # ─── Public API ────────────────────────────────────────────────────
 
