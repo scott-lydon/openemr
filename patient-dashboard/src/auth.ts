@@ -59,6 +59,16 @@ async function refreshAccessToken(token: ExtendedJWT): Promise<ExtendedJWT> {
     return { ...token, error: "RefreshAccessTokenError" };
   }
   try {
+    // Pass `scope` explicitly on refresh.
+    //
+    // OpenEMR's authorization server stores the OIDC `nonce` parameter
+    // alongside the granted scopes during the auth code exchange, then
+    // re-validates that combined set as a scope list on refresh and
+    // returns `invalid_scope: Check the \`nonce\` scope`. The recovery
+    // is to send the original scope list explicitly on the refresh
+    // request, which OpenEMR honours and re-issues against. Same string
+    // used in the SCOPES constant above so the granted scope shape stays
+    // identical between the initial token and every refresh.
     const response = await fetch(`${env.OPENEMR_ISSUER}/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -67,6 +77,7 @@ async function refreshAccessToken(token: ExtendedJWT): Promise<ExtendedJWT> {
         refresh_token: token.refreshToken,
         client_id: env.OPENEMR_CLIENT_ID,
         client_secret: env.OPENEMR_CLIENT_SECRET,
+        scope: SCOPES,
       }),
     });
 

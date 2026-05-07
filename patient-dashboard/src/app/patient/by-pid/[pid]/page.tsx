@@ -16,7 +16,12 @@ export default async function ByPidPage({
 }) {
   const { pid } = await params;
   const session = await auth();
-  if (!session?.accessToken) {
+  // Either no session, or Auth.js failed to refresh the token at some
+  // point and the session is in a broken state. In both cases, force a
+  // fresh OAuth round-trip so we get a working access token before
+  // hitting FHIR. Without this branch the user lands on the "no patient
+  // found" path for what is really an auth problem, which is misleading.
+  if (!session?.accessToken || session.error === "RefreshAccessTokenError") {
     redirect(`/login?callbackUrl=/patient/by-pid/${pid}`);
   }
 
@@ -31,6 +36,13 @@ export default async function ByPidPage({
     },
     cache: "no-store",
   });
+
+  // 401/403 means the token is stale or under-scoped. Send the user
+  // through OAuth again rather than telling them the patient doesn't
+  // exist.
+  if (response.status === 401 || response.status === 403) {
+    redirect(`/login?callbackUrl=/patient/by-pid/${pid}`);
+  }
 
   if (!response.ok) {
     redirect(`/?error=not-found&q=${encodeURIComponent(pid)}`);
