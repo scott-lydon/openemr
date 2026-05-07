@@ -1,9 +1,22 @@
 /**
  * Auth middleware.
  *
- * Every request other than /login, /api/auth/*, /healthz, and Next.js
- * static assets requires an authenticated session. Auth.js redirects
+ * Every request other than the public auth surfaces and Next.js static
+ * assets requires an authenticated session. Auth.js redirects
  * unauthenticated users to /login automatically.
+ *
+ * Public paths:
+ *   /login        — server-rendered page that auto-submits the OIDC
+ *                   sign-in (replaces the manual "Sign in with OpenEMR"
+ *                   button). This is the assignment-required default
+ *                   OAuth2/OIDC entry point.
+ *   /launch       — SMART-on-FHIR EHR launch endpoint. Receives
+ *                   `?iss=&launch=&pid=` from OpenEMR's demographics.php
+ *                   and triggers signIn() with launch context, which
+ *                   sends the clinician through the silent OAuth path
+ *                   (no consent screen, no password re-prompt).
+ *   /api/auth/*   — Auth.js's own routes (callback, csrf, providers).
+ *   /healthz      — liveness probe; no auth needed.
  *
  * The matcher excludes static assets so we don't pay the auth round-trip
  * on every CSS file. The `_next/image` and `_next/static` paths are
@@ -15,6 +28,7 @@ export default auth((req) => {
   const { pathname } = req.nextUrl;
   const isPublic =
     pathname.startsWith("/login") ||
+    pathname.startsWith("/launch") ||
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/healthz");
 
