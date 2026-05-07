@@ -178,6 +178,37 @@ switch ($search_any_type) {
             </div>
             <?php endif; ?>
 
+            <?php
+            // ─── Dashboard style toggle ──────────────────────────────────────
+            // One-click switch between the modern Next.js patient dashboard
+            // and the legacy PHP dashboard. Visible to anyone with chart
+            // access — the toggle only flips a presentation-layer global,
+            // it doesn't expose any extra data, and the legacy/modern pages
+            // both already enforce per-user ACLs at their own entry points.
+            //
+            // The CSRF token is minted in the same active session as the
+            // Co-Pilot row above; if the Co-Pilot row didn't run (because
+            // clinical_copilot_url is empty) we mint a fresh one here.
+            // ────────────────────────────────────────────────────────────────
+            $modernUrl = trim((string) ($GLOBALS['patient_dashboard_modern_url'] ?? ''));
+            $modernOn  = $modernUrl !== '';
+            $themeCsrf = $copilotCsrf
+                ?? \OpenEMR\Common\Csrf\CsrfUtils::collectCsrfToken(
+                    session: \OpenEMR\Common\Session\SessionWrapperFactory::getInstance()->getActiveSession()
+                );
+            ?>
+            <div class="btn-group btn-group-sm ml-2" role="group" aria-label="Dashboard style">
+                <a class="btn btn-sm <?php echo $modernOn ? 'btn-dark' : 'btn-outline-secondary'; ?>"
+                   href="/interface/clinical_copilot/toggle-modern-ui.php?csrf_token=<?php echo attr($themeCsrf); ?>"
+                   target="_top"
+                   title="<?php echo xla('Switch dashboard style'); ?>: <?php echo $modernOn
+                        ? xla('currently Modern (Next.js) - click to switch to OpenEMR style')
+                        : xla('currently OpenEMR (PHP) - click to switch to Modern style'); ?>">
+                    <i class="fa <?php echo $modernOn ? 'fa-moon' : 'fa-sun'; ?> mr-1" aria-hidden="true"></i>
+                    <?php echo $modernOn ? xlt('Modern') : xlt('OpenEMR style'); ?>
+                </a>
+            </div>
+
             <!-- ko if: encounterArray().length > 0 -->
             <div class="patientCurrentEncounter mt-2 d-block">
                     <span><?php echo xlt("Open Encounter"); ?>:</span>
