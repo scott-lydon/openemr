@@ -182,11 +182,21 @@ $logger->info(
 //    fragment is not sent to the sidecar in the initial GET, so the
 //    sidecar's HTTP access log never sees the token. The chat UI's JS
 //    extracts it from window.location.hash.
-$params = http_build_query([
+//
+//    `theme=modern` is added when the operator has switched the patient
+//    dashboard to its Next.js reimplementation (the same flag that
+//    redirects the Dashboard tab in demographics.php). The chat UI
+//    reads this and swaps to a matching dark/zinc palette so the user
+//    doesn't bounce between two visual languages mid-flow.
+$fragmentParams = [
     'token' => $token,
     'patient' => $patientId,
     'purpose' => $purpose,
-]);
+];
+if (trim((string) ($GLOBALS['patient_dashboard_modern_url'] ?? '')) !== '') {
+    $fragmentParams['theme'] = 'modern';
+}
+$params = http_build_query($fragmentParams);
 $redirect = $copilotBase . '/#' . $params;
 
 header('Location: ' . $redirect, true, 302);

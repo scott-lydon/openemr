@@ -92,20 +92,26 @@ if (isset($_GET['set_pid'])) {
 /*
  * Modernized presentation layer hand-off.
  *
- * When the global `patient_dashboard_modern_url` is set, redirect the
- * Dashboard tab to the Next.js reimplementation served at that URL.
- * The OpenEMR top-level shell (top nav, patient header bar, tab strip)
- * sits outside this iframe, so the redirect only swaps the dashboard
- * pane — the rest of the OpenEMR UX is unchanged.
+ * When the global `patient_dashboard_modern_url` is set, swap the
+ * Dashboard tab content for the Next.js reimplementation served at
+ * that URL. The OpenEMR top-level shell (top nav, patient header
+ * with the Co-Pilot button, tab strip) sits outside this iframe, so
+ * we keep the rest of the OpenEMR UX intact.
+ *
+ * Why this isn't a bare `header(Location:)` redirect: the parent
+ * frame's patient header (and therefore the Co-Pilot button) renders
+ * only after demographics.php's bottom-of-page JS calls
+ * `parent.left_nav.setPatient(...)` to seed the parent's Knockout
+ * patient observable. A server-side redirect skips that JS and the
+ * patient header never appears. Instead we emit a minimal HTML page
+ * that (1) calls setPatient with the same arguments demographics.php
+ * normally would, then (2) replaces the iframe location with the
+ * modern dashboard URL. The parent frame ends up in the same state
+ * it would after the legacy render, but the dashboard pane is the
+ * Next.js app.
  *
  * Escape hatch: append `?legacy=1` to the dashboard URL to bypass the
- * redirect and render the original PHP dashboard. Useful while the
- * modern app is still proving itself in production.
- *
- * Why a redirect rather than a nested iframe: the Dashboard tab is
- * already an iframe inside OpenEMR's main app. Adding another iframe
- * around the modern dashboard would be an iframe-in-iframe-in-shell,
- * which costs an extra navigation round-trip and complicates auth.
+ * swap and render the original PHP dashboard.
  *
  * See patient-dashboard/PATIENT_DASHBOARD_MIGRATION.md for the full
  * rationale and the framework-choice defense.
@@ -116,8 +122,98 @@ if (
     && !empty($pid)
     && empty($_GET['legacy'])
 ) {
-    $target = rtrim($modernDashboardUrl, '/') . '/patient/by-pid/' . urlencode((string)$pid);
-    header('Location: ' . $target, true, 302);
+    // Pull the same demographics row the legacy setMyPatient() block
+    // uses, so the parent frame gets the exact same arguments it would
+    // have on the legacy render path.
+    $modernPatientRow = getPatientData(
+        $pid,
+        "*, DATE_FORMAT(DOB,'%Y-%m-%d') as DOB_YMD"
+    );
+    $modernDateOfDeathRow = is_patient_deceased($pid);
+    $modernDateOfDeath = $modernDateOfDeathRow['date_deceased'] ?? null;
+    if (empty($modernDateOfDeath)) {
+        $modernDobLabel = ' ' . xl('DOB') . ': '
+            . oeFormatShortDate($modernPatientRow['DOB_YMD'])
+            . ' ' . xl('Age') . ': '
+            . getPatientAgeDisplay($modernPatientRow['DOB_YMD']);
+    } else {
+        $modernDobLabel = ' ' . xl('DOB') . ': '
+            . oeFormatShortDate($modernPatientRow['DOB_YMD'])
+            . ' ' . xl('Age at death') . ': '
+            . oeFormatAge($modernPatientRow['DOB_YMD'], $modernDateOfDeath);
+    }
+
+    // Pull the encounter list for setPatientEncounter so the parent's
+    // encounter dropdown stays populated.
+    $modernEncStmt = sqlStatement(
+        "SELECT fe.encounter,fe.date,openemr_postcalendar_categories.pc_catname FROM form_encounter AS fe " .
+        " left join openemr_postcalendar_categories on fe.pc_catid=openemr_postcalendar_categories.pc_catid  WHERE fe.pid = ? order by fe.date desc",
+        [$pid]
+    );
+    $modernEncIds = [];
+    $modernEncDates = [];
+    $modernEncCats = [];
+    while ($modernEncRow = sqlFetchArray($modernEncStmt)) {
+        $modernEncIds[] = $modernEncRow['encounter'];
+        $modernEncDates[] = oeFormatShortDate(
+            date('Y-m-d', strtotime((string)$modernEncRow['date']))
+        );
+        $modernEncCats[] = xl_appt_category($modernEncRow['pc_catname']);
+    }
+
+    $modernTarget = rtrim($modernDashboardUrl, '/')
+        . '/patient/by-pid/' . urlencode((string)$pid);
+
+    header('Content-Type: text/html; charset=utf-8');
+    ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Dashboard</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #09090b; color: #fafafa;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, system-ui, sans-serif; }
+  iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .loading { display: flex; align-items: center; justify-content: center;
+    height: 100%; font-size: 14px; color: #a1a1aa; }
+</style>
+</head>
+<body>
+<script>
+  // Seed the parent frame's patient observable so the OpenEMR shell
+  // renders the patient header (and the Co-Pilot button) above this
+  // iframe. Same call demographics.php normally makes from setMyPatient().
+  try {
+    if (parent && parent.left_nav && parent.left_nav.setPatient) {
+      parent.left_nav.setPatient(
+        <?php
+        echo js_escape($modernPatientRow['fname'] . ' ' . $modernPatientRow['lname']) . ','
+          . js_escape($pid) . ','
+          . js_escape($modernPatientRow['pubpid']) . ",'',"
+          . js_escape($modernDobLabel);
+        ?>
+      );
+      parent.left_nav.setPatientEncounter(
+        <?php echo json_encode($modernEncIds); ?>,
+        <?php echo json_encode($modernEncDates); ?>,
+        <?php echo json_encode($modernEncCats); ?>
+      );
+      if (parent.left_nav.syncRadios) parent.left_nav.syncRadios();
+    }
+  } catch (e) {
+    // Cross-origin or stale parent. The modern dashboard still works;
+    // the OpenEMR-rendered patient header just won't update.
+    console.warn('[modern-dashboard] could not seed parent patient header:', e);
+  }
+  // Replace the iframe location (not assign — we don't want a back-button
+  // entry for this stub document).
+  window.location.replace(<?php echo js_escape($modernTarget); ?>);
+</script>
+<div class="loading">Loading modern dashboard…</div>
+</body>
+</html>
+    <?php
     exit;
 }
 

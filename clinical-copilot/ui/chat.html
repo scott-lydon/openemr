@@ -230,9 +230,157 @@
     section.card > .body { padding: 0 18px 18px; }
     .per-symptom-list li, details.less-likely .row { grid-template-columns: 1fr 60px 1fr; }
   }
+
+  /* ─────────────────────────────────────────────────────────────────────
+   * Modern theme overrides.
+   *
+   * Mirrors the patient dashboard's zinc/emerald palette (Tailwind v4
+   * tokens) so the Co-Pilot chat reads as the same surface as the
+   * modern dashboard. Activated when the launching href carries
+   * `theme=modern` in the URL fragment — see launch.php and the small
+   * detection block at the top of the body script.
+   *
+   * Why a `[data-theme="modern"]:root` override block rather than a
+   * second stylesheet: every selector below is paired with its light
+   * counterpart, so a quick read of either side is enough to verify
+   * parity. Toggling at runtime is a single attribute change.
+   * ────────────────────────────────────────────────────────────────── */
+  html[data-theme="modern"] {
+    color-scheme: dark;
+    --bg: #09090b;             /* zinc-950 */
+    --panel: #18181b;          /* zinc-900 */
+    --ink: #fafafa;            /* zinc-50 */
+    --muted: #a1a1aa;          /* zinc-400 */
+    --primary: #18181b;        /* zinc-900 — header bg */
+    --accent: #34d399;         /* emerald-400 */
+    --accent-soft: #064e3b;    /* emerald-900 */
+    --highlight-bg: #422006;   /* amber-900 */
+    --highlight-text: #fde68a; /* amber-200 */
+    --highlight-border: #78350f; /* amber-800 */
+    --pass-bg: #064e3b;        /* emerald-900 */
+    --pass-text: #a7f3d0;      /* emerald-200 */
+    --shadow-card: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.4);
+    --row-target: #422006;     /* amber-900 */
+  }
+  html[data-theme="modern"] header.app {
+    background: var(--primary); color: var(--ink);
+    border-bottom: 1px solid #27272a; /* zinc-800 */
+  }
+  html[data-theme="modern"] .back-btn {
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.12);
+    color: var(--ink);
+  }
+  html[data-theme="modern"] .back-btn:hover { background: rgba(255,255,255,.12); }
+  html[data-theme="modern"] .patient-picker select {
+    background: rgba(0,0,0,.3); border: 1px solid #3f3f46; color: var(--ink);
+  }
+  html[data-theme="modern"] .verdict.blocked {
+    background: #7f1d1d; color: #fecaca;        /* red-900 / red-200 */
+  }
+  html[data-theme="modern"] .view-toggle {
+    background: #27272a;                         /* zinc-800 */
+  }
+  html[data-theme="modern"] .view-toggle button.active {
+    background: var(--panel); color: var(--ink);
+    box-shadow: 0 1px 2px rgba(0,0,0,.4);
+  }
+  html[data-theme="modern"] .finding {
+    background: #18181b; border: 1px solid #27272a;
+  }
+  html[data-theme="modern"] .finding.tier-highlight {
+    border-left: 4px solid #f59e0b;              /* amber-500 */
+    background: #1c1917;                          /* stone-900-ish */
+  }
+  html[data-theme="modern"] .finding .pct {
+    background: #27272a; color: var(--muted);
+  }
+  html[data-theme="modern"] .finding.tier-highlight .pct {
+    background: #422006; color: #fcd34d;          /* amber-300 */
+  }
+  html[data-theme="modern"] .source-btn {
+    border: 1px solid #3f3f46; background: transparent; color: var(--accent);
+  }
+  html[data-theme="modern"] .source-btn:hover {
+    background: var(--accent); color: #18181b; border-color: var(--accent);
+  }
+  html[data-theme="modern"] .toggle-rationale {
+    color: var(--accent);
+  }
+  html[data-theme="modern"] .symptom-list li,
+  html[data-theme="modern"] .badge {
+    background: var(--accent-soft); color: var(--pass-text);
+  }
+  html[data-theme="modern"] .progress-bar {
+    background: #27272a;
+  }
+  html[data-theme="modern"] .symptom-row,
+  html[data-theme="modern"] details.less-likely .row {
+    border-top-color: #27272a;
+  }
+  html[data-theme="modern"] .recommendation-block {
+    background: #18181b; border: 1px dashed #3f3f46;
+  }
+  html[data-theme="modern"] .symptom-summary {
+    border-bottom-color: #27272a;
+  }
+  html[data-theme="modern"] .citation-chip {
+    background: rgba(52,211,153,.12); color: var(--accent);
+    border: 1px solid rgba(52,211,153,.25);
+  }
+  html[data-theme="modern"] table.chart th {
+    border-bottom-color: #3f3f46;
+  }
+  html[data-theme="modern"] table.chart td {
+    border-bottom-color: #27272a; color: var(--ink);
+  }
+  html[data-theme="modern"] .pill.high {
+    background: #7f1d1d; color: #fecaca;
+  }
+  html[data-theme="modern"] .pill.muted {
+    background: #27272a; color: var(--muted);
+  }
+  html[data-theme="modern"] .spinner {
+    border-color: #27272a; border-top-color: var(--accent);
+  }
+  html[data-theme="modern"] .footer-stats {
+    background: #18181b; border-top-color: #27272a;
+  }
+  html[data-theme="modern"] section.card {
+    background: var(--panel);
+  }
+  html[data-theme="modern"] a { color: var(--accent); }
 </style>
 </head>
 <body>
+<script>
+  /*
+   * Theme bootstrap — runs synchronously before any visible paint.
+   *
+   * The launching href (interface/clinical_copilot/launch.php) appends
+   * `theme=modern` to the URL fragment when OpenEMR's
+   * `patient_dashboard_modern_url` global is set. We read it here and
+   * apply `data-theme="modern"` to <html> so the override block in the
+   * stylesheet wins. The hash is also where the task token lives so we
+   * are touching the same source of truth that the rest of the JS does.
+   *
+   * Failure mode: if the hash is malformed or `theme` is missing, we
+   * default to the legacy/light theme. Logged via console.warn so a
+   * future engineer can spot it without instrumentation.
+   */
+  (function applyTheme() {
+    try {
+      var hash = window.location.hash.replace(/^#/, '');
+      var params = new URLSearchParams(hash);
+      var theme = params.get('theme');
+      if (theme === 'modern') {
+        document.documentElement.dataset.theme = 'modern';
+      }
+    } catch (err) {
+      console.warn('[copilot] could not parse theme from hash:', err);
+    }
+  })();
+</script>
 <header class="app">
   <a class="back-btn" href="javascript:void(0)" id="copilot-back-btn" title="Back to OpenEMR">&larr; Back</a>
   <div class="title-block">
