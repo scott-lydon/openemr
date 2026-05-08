@@ -267,34 +267,44 @@ if (
 </head>
 <body>
 <script>
-  // Seed the parent frame's patient observable so the OpenEMR shell
-  // renders the patient header (and the Co-Pilot button) above this
-  // iframe. Same call demographics.php normally makes from setMyPatient().
-  try {
-    if (parent && parent.left_nav && parent.left_nav.setPatient) {
-      parent.left_nav.setPatient(
-        <?php
-        echo js_escape($modernPatientRow['fname'] . ' ' . $modernPatientRow['lname']) . ','
-          . js_escape($pid) . ','
-          . js_escape($modernPatientRow['pubpid']) . ",'',"
-          . js_escape($modernDobLabel);
-        ?>
-      );
-      parent.left_nav.setPatientEncounter(
-        <?php echo json_encode($modernEncIds); ?>,
-        <?php echo json_encode($modernEncDates); ?>,
-        <?php echo json_encode($modernEncCats); ?>
-      );
-      if (parent.left_nav.syncRadios) parent.left_nav.syncRadios();
-    }
-  } catch (e) {
-    // Cross-origin or stale parent. The modern dashboard still works;
-    // the OpenEMR-rendered patient header just won't update.
-    console.warn('[modern-dashboard] could not seed parent patient header:', e);
-  }
-  // Replace the iframe location (not assign — we don't want a back-button
-  // entry for this stub document).
-  window.location.replace(<?php echo js_escape($modernTarget); ?>);
+  /*
+   * Top-level navigate (NOT iframe replace) to the modern dashboard.
+   *
+   * Why `window.top.location` and not `window.location`:
+   *
+   *   `window.location.replace(target)` would keep the dashboard
+   *   *inside* OpenEMR's iframe shell. That breaks Safari (and
+   *   Firefox by default) because the parent shell is on
+   *   https://localhost:9300 and the dashboard dev server is on
+   *   http://localhost:8400 — Safari refuses to load HTTP iframes
+   *   inside an HTTPS parent under its mixed-content policy. Chrome
+   *   silently allows the localhost case so the bug only shows up
+   *   in stricter browsers.
+   *
+   *   `window.top.location.replace(target)` navigates the *whole
+   *   window* away from OpenEMR's shell to the dashboard's origin.
+   *   The dashboard then runs as a top-level document, no iframe
+   *   anywhere — Safari has nothing to mixed-content-block. This is
+   *   the same pattern OpenEMR's Clinical Co-Pilot launch.php uses
+   *   (server-side `header("Location: …")` to the Co-Pilot at
+   *   localhost:8801). Two surfaces, same launch model.
+   *
+   *   Trade-off: the OpenEMR top nav (Calendar, Finder, Patient
+   *   menu) is no longer visible while the clinician is on the
+   *   dashboard. The dashboard's own header carries the patient
+   *   identity, and `Back to picker` / browser back returns to
+   *   OpenEMR. That's the right UX for a "modernize the framework"
+   *   deliverable — the modern app shouldn't be cramped inside the
+   *   legacy chrome.
+   *
+   * Why we no longer call setPatient on the parent:
+   *
+   *   With top-level navigation, OpenEMR's shell is gone the moment
+   *   the navigation fires; seeding parent.left_nav.setPatient
+   *   would either no-op (parent already replaced) or run on a
+   *   document that's about to unload. We drop those calls.
+   */
+  window.top.location.replace(<?php echo js_escape($modernTarget); ?>);
 </script>
 <div class="loading">Loading modern dashboard…</div>
 </body>
