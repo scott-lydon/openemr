@@ -351,17 +351,74 @@ def _wire_ingest_dependencies(app: FastAPI, settings: object) -> None:
     app.dependency_overrides[get_scanner] = default_scanner
 
     # FHIR client: a fresh httpx client per request, mounted at the
-    # OpenEMR FHIR base URL.
-    def _fhir_client() -> FhirDocumentRefClient:
+    # OpenEMR FHIR base URL. Uses the SMART Backend Services jwt-bearer
+    # flow via OpenEMRTokenCache to mint a system access token; the cache
+    # holds the token until ~30s before expiry and refreshes transparently.
+    #
+    # We build the cache lazily on the first request because constructing
+    # OpenEMRTokenCache reads files on disk (the JWT signing key) and we
+    # do not want the import-time cost paid by every test fixture that
+    # imports `create_app()`. The cache is also process-wide singleton-y:
+    # one cache instance shared across requests so the token is reused.
+    _token_cache_holder: dict[str, "OpenEMRTokenCache | None"] = {"cache": None}
+
+    def _get_token_cache() -> "OpenEMRTokenCache":
+        cached = _token_cache_holder.get("cache")
+        if cached is not None:
+            return cached
+        # Lazy import to avoid pulling in cryptography/PyJWT at app boot
+        # time when tests have already overridden _fhir_client. Failing
+        # to load the key here surfaces as a 500 with the OpenEMRConfigurationError
+        # message, which names the missing setting (private key path,
+        # client_id, issuer, etc.) so the operator can fix .env.
+        from sidecar.openemr_oauth import (
+            OpenEMRConfigurationError,
+            OpenEMRTokenCache,
+        )
+        try:
+            new_cache = OpenEMRTokenCache(settings)  # type: ignore[arg-type]
+        except OpenEMRConfigurationError as exc:
+            raise RuntimeError(
+                "OpenEMR OAuth is not configured for the upload pipeline. "
+                "Set COPILOT_OPENEMR_CLIENT_ID, COPILOT_OPENEMR_PRIVATE_KEY_PATH, "
+                "and COPILOT_OPENEMR_OAUTH_BASE in clinical-copilot/.env, then "
+                f"restart the sidecar. Underlying: {exc}"
+            ) from exc
+        _token_cache_holder["cache"] = new_cache
+        return new_cache
+
+    async def _fhir_client() -> FhirDocumentRefClient:
         if _mock_active():
             # Return a stub the handler will not actually invoke.
             from sidecar.ingest.fhir_client import StubFhirClient
             return StubFhirClient()
-        # An OAuth-backed access token is acquired upstream; for the
-        # initial Phase 2 wiring we use a per-request anonymous bearer.
-        # Phase 3 will replace this with the OpenEMR token cache call
-        # when the persistence path needs the same client.
-        access_token = getattr(settings, "openemr_access_token", "") or ""
+        # Mint (or reuse) an access token via SMART Backend Services. If
+        # this raises OpenEMRTokenError we let it propagate — the prior
+        # behavior was to silently fall back to an empty token, which made
+        # every request 500 with a confusing 'Illegal header value Bearer '
+        # h11 error. Surface the real OAuth failure instead.
+        from sidecar.openemr_oauth import OpenEMRTokenError
+        try:
+            access_token = await _get_token_cache().get()
+        except OpenEMRTokenError as exc:
+            raise RuntimeError(
+                "Failed to mint an OpenEMR system access token for the "
+                "upload pipeline. The FHIR DocumentReference write cannot "
+                "proceed. Check COPILOT_OPENEMR_OAUTH_BASE reachability, "
+                "the registered client's grant_types include "
+                "client_credentials with the system/* scopes the upload "
+                f"needs, and the JWT signing key matches the JWKS. Underlying: {exc}"
+            ) from exc
+        if not access_token:
+            # Defensive: OpenEMRTokenCache.get() already validates non-empty,
+            # but an explicit check here makes the failure obvious if someone
+            # ever changes the cache's contract.
+            raise RuntimeError(
+                "OpenEMRTokenCache.get() returned an empty access token. "
+                "The httpx client would build 'Authorization: Bearer ' with "
+                "no token and h11 would reject it as an illegal header. "
+                "Check the OAuth response body in the sidecar logs."
+            )
         return HttpxFhirClient(
             fhir_base=getattr(settings, "openemr_fhir_base", ""),
             access_token=access_token,
