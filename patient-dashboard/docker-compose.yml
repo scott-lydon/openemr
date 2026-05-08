@@ -39,8 +39,16 @@ services:
       # localhost (which would resolve to the dashboard container itself).
       OPENEMR_ISSUER: ${DOCKER_OPENEMR_ISSUER:-http://host.docker.internal:8300/oauth2/default}
       OPENEMR_FHIR_BASE: ${DOCKER_OPENEMR_FHIR_BASE:-http://host.docker.internal:8300/apis/default/fhir/}
-      AUTH_URL: ${AUTH_URL:-http://localhost:8400}
       AUTH_TRUST_HOST: "1"
+      # Note: AUTH_URL is intentionally NOT set here. Auth.js v5 takes
+      # AUTH_URL as the canonical base for *every* redirect (the
+      # AUTH_TRUST_HOST=1 fallback is only used when AUTH_URL is unset).
+      # If we hard-coded `${AUTH_URL:-http://localhost:8400}` here, the
+      # Hetzner deploy would override the production AUTH_URL from
+      # .env.local with localhost (because the host shell does not
+      # export AUTH_URL), and the Modern Dashboard button would 302 to
+      # localhost:8400 from the user's browser. AUTH_URL belongs in
+      # .env.local; the env_file provides it.
     extra_hosts:
       # Make host.docker.internal work on Linux as well as macOS.
       - "host.docker.internal:host-gateway"
