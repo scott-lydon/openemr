@@ -73,6 +73,12 @@ SYSTEM_FHIR_SCOPES: Final[tuple[str, ...]] = (
     "system/Encounter.read",
     "system/Procedure.read",
     "system/DocumentReference.read",
+    # write scope is needed for the chat upload's "drop a PDF, see it
+    # in the patient profile" demo path. Without it the FHIR DocumentReference
+    # POST gets HTTP 404 / 'Route not found' even though the
+    # CapabilityStatement advertises 'create' — OpenEMR registers the
+    # POST handler conditionally on the scope grant.
+    "system/DocumentReference.write",
 )
 
 
