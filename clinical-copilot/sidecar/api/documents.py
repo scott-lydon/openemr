@@ -210,6 +210,34 @@ async def post_patient_document(
     import os as _os
     if _os.environ.get("COPILOT_ALLOW_MOCK", "").lower() == "true":
         result = _mock_upload_result(body=body, mime_hint=file.content_type)
+        # Cache the bytes so the W2 chat's intake extractor can read the
+        # actual PDF content when the user references this document_id.
+        # Without this, the chat falls back to placeholder claims that
+        # don't reflect what the user uploaded — see _mock_upload_cache
+        # for the rationale and bounded-size policy.
+        try:
+            from sidecar.api import _mock_upload_cache
+            _mock_upload_cache.store(
+                document_id=result.document_id,
+                body=body,
+                mime_hint=file.content_type or "application/octet-stream",
+                filename=file.filename or "document.pdf",
+            )
+        except Exception as cache_exc:  # noqa: BLE001 — never break upload path
+            logger.warning(
+                "mock_upload_cache_store_failed",
+                extra={
+                    "error_type": type(cache_exc).__name__,
+                    "error_message": str(cache_exc),
+                    "document_id": result.document_id,
+                    "hint": (
+                        "Bytes were not cached for the W2 chat extractor. "
+                        "The chat will fall back to a placeholder claim. "
+                        "Check sidecar.api._mock_upload_cache for any "
+                        "exceptions raised during store()."
+                    ),
+                },
+            )
         try:
             await _push_to_openemr_documents_store(
                 body=body,

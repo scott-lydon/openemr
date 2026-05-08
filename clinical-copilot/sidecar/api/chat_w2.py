@@ -290,6 +290,122 @@ def _allow_mock() -> bool:
     return os.environ.get("COPILOT_ALLOW_MOCK", "").lower() == "true"
 
 
+# Cap how much extracted text we surface as one claim. The synthesizer
+# packs every claim into its prompt; an unbounded dump from a 30-page
+# PDF would blow the context budget. ~1.2k characters fits a couple of
+# paragraphs and stays well under any realistic prompt cap.
+_MAX_CLAIM_CHARS = 1200
+
+
+def _claims_from_attached_documents(document_ids: list[str]) -> list[ClinicalClaim]:
+    """Build one ``ClinicalClaim`` per attached document from cached bytes.
+
+    Used by the mock-mode intake extractor to derive claims from the
+    actual PDF the user uploaded — instead of returning a hard-coded
+    placeholder fact. Production swaps this for the live VLM extractor
+    against FHIR DocumentReference.
+
+    Failure modes (each surfaces its own clear claim text rather than
+    silently dropping the document):
+
+    - Bytes not found in cache (e.g. sidecar restarted between upload
+      and chat). Claim notes the gap explicitly.
+    - PDF has no extractable native text (image-only scan). Claim
+      flags that VLM extraction would be required.
+    - pypdf raises while parsing. Claim records the exception class so
+      operators can spot library failures in the chat output.
+    """
+    from sidecar.api import _mock_upload_cache
+
+    claims: list[ClinicalClaim] = []
+    for document_id in document_ids:
+        cached = _mock_upload_cache.fetch(document_id)
+        citation = f"DocumentReference/{document_id}"
+
+        if cached is None:
+            claims.append(
+                ClinicalClaim(
+                    text=(
+                        f"Attached document {document_id} could not be read: "
+                        "the sidecar's mock upload cache has no bytes for "
+                        "this id. The sidecar may have restarted between "
+                        "upload and chat. Re-upload the file to retry."
+                    ),
+                    citations=[citation],
+                )
+            )
+            continue
+
+        extracted = _try_extract_pdf_text(cached.body, cached.mime_hint)
+        if extracted is None:
+            claims.append(
+                ClinicalClaim(
+                    text=(
+                        f"Attached document {cached.filename!r} "
+                        f"({len(cached.body)} bytes, mime "
+                        f"{cached.mime_hint!r}) is not a parseable PDF. "
+                        "Live VLM extraction is required for image-only "
+                        "scans; no claim could be derived from the bytes."
+                    ),
+                    citations=[citation],
+                )
+            )
+            continue
+
+        truncated = extracted[:_MAX_CLAIM_CHARS]
+        suffix = "" if len(extracted) <= _MAX_CLAIM_CHARS else " […truncated]"
+        claims.append(
+            ClinicalClaim(
+                text=(
+                    f"Attached document {cached.filename!r} contains: "
+                    f"{truncated}{suffix}"
+                ),
+                citations=[citation],
+            )
+        )
+    return claims
+
+
+def _try_extract_pdf_text(body: bytes, mime_hint: str) -> str | None:
+    """Pull native text from a PDF byte stream, or return ``None``.
+
+    A return of ``None`` means: this is not a PDF, the PDF has no text
+    layer (scanned image), or pypdf could not parse it. The caller
+    surfaces a clearly-flagged claim in each case so the chat output
+    explains why the document was not analyzed rather than going silent.
+    """
+    is_pdf = mime_hint.lower().startswith("application/pdf") or body[:5] == b"%PDF-"
+    if not is_pdf:
+        return None
+    try:
+        import io
+        from pypdf import PdfReader  # type: ignore[import-not-found]
+
+        reader = PdfReader(io.BytesIO(body), strict=False)
+        text_parts: list[str] = []
+        for page in reader.pages:
+            try:
+                page_text = page.extract_text() or ""
+            except Exception as page_exc:  # noqa: BLE001 — record + continue
+                logger.warning(
+                    "pypdf page.extract_text raised; skipping page. "
+                    "type=%s msg=%s",
+                    type(page_exc).__name__, page_exc,
+                )
+                continue
+            page_text = page_text.strip()
+            if page_text:
+                text_parts.append(page_text)
+        joined = "\n".join(text_parts).strip()
+        return joined or None
+    except Exception as exc:  # noqa: BLE001 — log and tell the caller
+        logger.warning(
+            "pypdf could not parse the attached PDF. type=%s msg=%s",
+            type(exc).__name__, exc,
+        )
+        return None
+
+
 def _build_nodes(*, allow_mock: bool) -> GraphNodes:
     """Wire graph nodes for the chat demo.
 
@@ -432,27 +548,17 @@ def _build_nodes(*, allow_mock: bool) -> GraphNodes:
     async def real_intake_extractor(state: GraphState) -> list[ClinicalClaim]:
         if not state.attached_documents:
             return []
-        # Mock mode short-circuits to a synthetic claim so the demo
-        # flow (drop a PDF, ask a question, see a cited response)
-        # completes without the live VLM. Production wires the real
-        # extract_lab_pdf / extract_intake_pdf here against the bytes
-        # fetched from FHIR DocumentReference.
-        if allow_mock:
-            return [
-                ClinicalClaim(
-                    text=(
-                        "Attached lab indicates HbA1c 6.8% — above the 6.5% "
-                        "diagnostic threshold for diabetes per ADA."
-                    ),
-                    citations=[
-                        f"DocumentReference/{state.attached_documents[0]}",
-                        "ada-2025-glycemic-target-7pct",
-                    ],
-                )
-            ]
-        # Live wiring deferred to a follow-up commit; the route still
-        # produces a refusal-with-reason rather than a fabricated answer.
-        return []
+        # Mock mode used to short-circuit to a hard-coded HbA1c claim so the
+        # demo flow ("drop a PDF, ask a question, see a cited response")
+        # completed without the live VLM. That was misleading: the response
+        # claimed a fact that wasn't in the user's PDF. We now extract the
+        # native text directly from the cached bytes via pypdf so the claim
+        # reflects what the document actually says. No API key required.
+        # When mock is off, we still return [] until the live VLM dispatcher
+        # is wired against FHIR DocumentReference.
+        if not allow_mock:
+            return []
+        return _claims_from_attached_documents(state.attached_documents)
 
     async def real_pairwise(state: GraphState) -> list[ClinicalClaim]:
         return []
