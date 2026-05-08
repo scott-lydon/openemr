@@ -30,7 +30,15 @@ services:
     container_name: openemr-patient-dashboard
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8400:8400"
+      # Bind 0.0.0.0 by default so production deploys (Hetzner, etc.)
+      # can reach the dashboard from the internet. Local devs can pin
+      # to loopback by exporting DASHBOARD_HOST_BIND=127.0.0.1 before
+      # `docker compose up`. We *intentionally* default to 0.0.0.0
+      # because the dashboard requires Auth.js sign-in for every route
+      # and the previous "127.0.0.1" repo default silently re-pinned
+      # production to loopback every time auto-deploy.sh stash-popped
+      # the host's local edit, breaking access from the user's browser.
+      - "${DASHBOARD_HOST_BIND:-0.0.0.0}:8400:8400"
     env_file:
       - .env.local
     environment:
