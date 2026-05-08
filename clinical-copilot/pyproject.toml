@@ -98,10 +98,8 @@ w2_sanitize = [
     # Layer 7 output scanning: Sensitive, Toxicity, NoRefusal.
     "llm-guard>=0.3.15",
     # Layer 4 second opinion ensembled with LLM Guard. Reduces shared blind
-    # spots in prompt-injection detection. Pinned at the latest released
-    # version on PyPI as of 2026-05-08 (>=0.1.5 was unreachable and broke
-    # the sidecar production image build).
-    "rebuff>=0.1.1",
+    # spots in prompt-injection detection.
+    "rebuff>=0.1.5",
 ]
 w2_render = [
     # Synthetic lab fixture rendering (clean tier).
