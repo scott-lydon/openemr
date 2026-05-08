@@ -27,7 +27,16 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full bg-zinc-50 font-sans text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+      <body
+        // Browser extensions (e.g. CNET Shopping injects cnet-shopping-enabled,
+        // Grammarly injects data-gr-*, ColorZilla injects cz-shortcut-listen)
+        // mutate <body> attributes before React hydrates. That mismatch is
+        // outside our control and harmless, so we suppress the warning here ONLY.
+        // Do NOT spread suppressHydrationWarning to children — it would mask
+        // real bugs in our own server/client output.
+        suppressHydrationWarning
+        className="min-h-full bg-zinc-50 font-sans text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100"
+      >
         {children}
       </body>
     </html>
