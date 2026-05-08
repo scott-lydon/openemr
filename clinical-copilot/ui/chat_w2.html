@@ -231,14 +231,34 @@
   html[data-theme="modern"] .composer {
     background: var(--panel); border-top: 1px solid var(--border);
   }
+  /* The actual rounded white "card" the user types into is
+     `.composer-shell`, not the bare textarea — the textarea is
+     transparent and inherits from the shell. Without an override
+     here the shell stays #fff (line ~116) and the typed text is
+     invisible against it. */
+  html[data-theme="modern"] .composer-shell {
+    background: #18181b;          /* zinc-900 */
+    border: 1px solid #3f3f46;    /* zinc-700 */
+    box-shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.4);
+  }
   html[data-theme="modern"] .composer textarea,
   html[data-theme="modern"] .composer input[type="text"] {
-    background: rgba(0,0,0,.3); color: var(--ink);
-    border: 1px solid var(--border);
+    background: transparent;       /* keep transparent — shell carries the color */
+    color: var(--ink);
+    border: 0;
   }
   html[data-theme="modern"] .composer textarea::placeholder,
   html[data-theme="modern"] .composer input[type="text"]::placeholder {
     color: var(--muted);
+  }
+  /* The attach paperclip's ring used the light --border on a dark
+     bg, which dropped contrast and looked like a stray dot. */
+  html[data-theme="modern"] .composer button.attach {
+    background: transparent; color: var(--muted);
+    border: 1px solid #3f3f46;
+  }
+  html[data-theme="modern"] .composer button.attach:hover {
+    color: var(--accent); border-color: var(--accent);
   }
   html[data-theme="modern"] .send-btn,
   html[data-theme="modern"] button[type="submit"] {

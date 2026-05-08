@@ -288,8 +288,18 @@
     color: var(--ink);
   }
   html[data-theme="modern"] .back-btn:hover { background: rgba(255,255,255,.12); }
-  html[data-theme="modern"] .patient-picker select {
-    background: rgba(0,0,0,.3); border: 1px solid #3f3f46; color: var(--ink);
+  /* The patient picker in the header is a bare <select id="patient">,
+     not wrapped in `.patient-picker` — match both selectors so future
+     refactors don't silently regress the dark-mode look. */
+  html[data-theme="modern"] .patient-picker select,
+  html[data-theme="modern"] header.app select,
+  html[data-theme="modern"] select#patient {
+    background: #27272a;        /* zinc-800 */
+    border: 1px solid #3f3f46;  /* zinc-700 */
+    color: var(--ink);
+  }
+  html[data-theme="modern"] select#patient option {
+    background: #18181b; color: var(--ink);
   }
   html[data-theme="modern"] .verdict.blocked {
     background: #7f1d1d; color: #fecaca;        /* red-900 / red-200 */
@@ -359,8 +369,28 @@
   html[data-theme="modern"] .spinner {
     border-color: #27272a; border-top-color: var(--accent);
   }
+  /* The footer stats bar's actual class is `.footer-meta` (see line
+     227); the previous `.footer-stats` selector here matched nothing
+     and the bar rendered as a stark white strip in dark mode. */
+  html[data-theme="modern"] .footer-meta,
   html[data-theme="modern"] .footer-stats {
-    background: #18181b; border-top-color: #27272a;
+    background: #18181b; border-top: 1px solid #27272a; color: var(--muted);
+  }
+  /* "N less-likely considerations" expander — was a white card. */
+  html[data-theme="modern"] details.less-likely {
+    background: #18181b; border: 1px dashed #3f3f46;
+  }
+  html[data-theme="modern"] details.less-likely > summary {
+    color: var(--accent);
+  }
+  /* "Data gap:" callout — was light blue with dark text. */
+  html[data-theme="modern"] .gap {
+    background: rgba(59,130,246,.10);   /* blue-500 @ 10% */
+    color: #bfdbfe;                      /* blue-200 */
+    border: 1px solid rgba(59,130,246,.30);
+  }
+  html[data-theme="modern"] .gap .lead {
+    color: #93c5fd;                      /* blue-300 — slightly brighter for the label */
   }
   html[data-theme="modern"] section.card {
     background: var(--panel);
