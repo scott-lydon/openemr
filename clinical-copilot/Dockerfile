@@ -21,6 +21,16 @@ RUN pip install --upgrade pip wheel \
 
 FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONHASHSEED=random
+# Native shared libraries that the w2_ingest pipeline links to at import
+# time (NOT pip-installable):
+#   - libmagic1: backing C library for python-magic. `import magic` raises
+#     ImportError("failed to find libmagic. Check your installation") on
+#     the slim base without it, which 500s every upload before any code
+#     gets a chance to inspect the bytes.
+# Keep this list minimal so the runtime image stays small.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
 RUN useradd --uid 10001 --create-home --shell /bin/bash copilot
 WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
