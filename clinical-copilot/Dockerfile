@@ -7,15 +7,17 @@ COPY pyproject.toml ./
 COPY sidecar ./sidecar
 COPY bff ./bff
 RUN pip install --upgrade pip wheel \
-    && pip install ".[openai,langgraph,postgres,observability,phi,w2_ingest,w2_sanitize,w2_render]"
+    && pip install ".[openai,langgraph,postgres,observability,phi,w2_ingest]"
 # Note: w2_ingest is required by the /agent-api/v1/patients/{pid}/documents
 # upload pipeline (pypdf, pymupdf, python-magic, clamd). Without it every
 # PDF upload 500s with `ModuleNotFoundError: No module named 'pypdf'`,
-# which is the exact regression that hit prod on 2026-05-08. The
-# w2_sanitize and w2_render groups round out the upload-side
-# dependencies; if any are skipped here the failures show up only when
-# the user attaches a document, not at container start, so always
-# install all three together.
+# which is the exact regression that hit prod on 2026-05-08.
+#
+# w2_sanitize and w2_render are NOT installed here on purpose:
+#   - sidecar.sanitize is referenced only from tests, never from a
+#     runtime import path, so llm-guard / rebuff are dev-only deps.
+#   - reportlab / weasyprint are fixture-rendering helpers, not
+#     production code paths.
 
 FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONHASHSEED=random
