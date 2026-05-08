@@ -59,39 +59,18 @@ if [ ! -d node_modules ]; then
     npm install --silent
 fi
 
-# If openssl cert files don't exist yet, generate them. These are
-# preferred over Next.js's mkcert auto-generate path because mkcert
-# tries to install a root CA via sudo, which doesn't work
-# non-interactively in launch scripts. Browsers will warn the first
-# time the dashboard is loaded; the user accepts the cert by visiting
-# https://localhost:8400 directly. Subsequent loads (incl. iframes)
-# work without prompts.
-CERT_DIR="$ROOT/certificates"
-CERT_KEY="$CERT_DIR/localhost-key.pem"
-CERT_CRT="$CERT_DIR/localhost.pem"
-if [ ! -f "$CERT_KEY" ] || [ ! -f "$CERT_CRT" ]; then
-    echo "Generating self-signed cert at $CERT_DIR …"
-    mkdir -p "$CERT_DIR"
-    openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$CERT_KEY" \
-        -out "$CERT_CRT" \
-        -days 825 \
-        -subj "/CN=localhost" \
-        -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1" \
-        >/dev/null 2>&1
-    echo "Done. ACCEPT THE CERT IN YOUR BROWSER:"
-    echo "  - Visit https://localhost:$PORT directly (any path)"
-    echo "  - Click through the 'Not Secure' warning once"
-    echo "  - The OpenEMR iframe will then load without mixed-content blocks"
-fi
-
-echo "Starting on https://localhost:$PORT/  (logs: $LOG)"
+echo "Starting on http://localhost:$PORT/  (logs: $LOG)"
+echo ""
+echo "Note: Safari (and Firefox by default) refuse to load this HTTP"
+echo "dashboard inside OpenEMR's HTTPS iframe shell. Chrome silently"
+echo "allows the localhost mixed-content case so the bug only shows"
+echo "up in stricter browsers. Workaround for Safari users: use"
+echo "Chrome, OR install mkcert + serve dashboard on HTTPS (see the"
+echo "Cowork session handoff for the full Apache reverse-proxy"
+echo "approach that didn't pan out due to Auth.js v5 basePath bugs)."
+echo ""
 echo "Press Ctrl-C to stop."
 exec env \
     NODE_TLS_REJECT_UNAUTHORIZED=0 \
     PORT="$PORT" \
-    npx next dev \
-        --experimental-https \
-        --experimental-https-key "$CERT_KEY" \
-        --experimental-https-cert "$CERT_CRT" \
-        --port "$PORT" 2>&1 | tee "$LOG"
+    npm run dev 2>&1 | tee "$LOG"
