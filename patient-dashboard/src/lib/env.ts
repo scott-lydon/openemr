@@ -61,7 +61,30 @@ const Schema = z.object({
   NEXT_PUBLIC_BUILD_SHA: z.string().default("dev"),
 });
 
+// During `next build`, Next sets NEXT_PHASE='phase-production-build' and
+// imports every server module to collect page data. Real env vars are
+// runtime-only (provided by docker-compose `env_file:` at container start),
+// so a strict parse at build time fails with "expected string, received
+// undefined" even though the running container has the values. Return a
+// sentinel set of build-safe placeholders during the build phase; the
+// container's first runtime import re-runs loadEnv() against the real env.
+const isNextBuild =
+  process.env.NEXT_PHASE === "phase-production-build" ||
+  process.env.PATIENT_DASHBOARD_BUILD_SKIP_ENV_VALIDATION === "1";
+
 function loadEnv() {
+  if (isNextBuild) {
+    return Schema.parse({
+      OPENEMR_ISSUER: "https://build-time-placeholder.invalid/oauth2/default",
+      OPENEMR_CLIENT_ID: "build-time-placeholder",
+      OPENEMR_CLIENT_SECRET: "build-time-placeholder-build-time-placeholder",
+      OPENEMR_FHIR_BASE: "https://build-time-placeholder.invalid/apis/default/fhir/",
+      OPENEMR_FHIR_VERIFY_SSL: "1",
+      AUTH_SECRET: "build-time-placeholder-build-time-placeholder-build-time",
+      AUTH_TRUST_HOST: "1",
+      NEXT_PUBLIC_BUILD_SHA: process.env.NEXT_PUBLIC_BUILD_SHA ?? "dev",
+    });
+  }
   const parsed = Schema.safeParse(process.env);
   if (parsed.success) return parsed.data;
   // Format every issue as a clear, actionable line. Without this, Next.js
