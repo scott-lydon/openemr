@@ -175,20 +175,30 @@ async def synthesize(
 ) -> SynthesizedAnswer:
     """Run the synthesizer and return the structured answer.
 
-    Routing:
+    Routing (the previous implementation forced the mock path whenever
+    ``COPILOT_ALLOW_MOCK=true``, which meant a real OpenAI key was
+    ignored just because mock mode was on for upstream services like the
+    document store and queue. The synthesizer is downstream pure prose —
+    it does not reach Postgres, ClamAV, or the queue — so it is safe to
+    use the real LLM here even while the rest of the stack is mocked):
 
-    * If COPILOT_ALLOW_MOCK=true OR the OpenAI key is missing, use the
-      deterministic mock so the chat keeps working without network.
-    * Otherwise call OpenAI with structured output.
+    * Use OpenAI whenever a key is configured. ``COPILOT_ALLOW_MOCK`` no
+      longer downgrades the synthesizer.
+    * Set ``COPILOT_FORCE_MOCK_SYNTHESIZER=true`` to override and force
+      the deterministic mock (for offline CI, prompt-stability tests, or
+      when you intentionally want to bypass the API for cost reasons).
+    * Without an OpenAI key the mock is the only option.
 
     Raises ``SynthesizerError`` on every failure mode (config missing,
     network, schema invalid). The caller falls back to the dumb formatter.
     """
     cfg = settings or get_settings()
-    allow_mock = os.environ.get("COPILOT_ALLOW_MOCK", "").lower() == "true"
     has_key = bool(cfg.openai_api_key)
+    force_mock = (
+        os.environ.get("COPILOT_FORCE_MOCK_SYNTHESIZER", "").lower() == "true"
+    )
 
-    if allow_mock or not has_key:
+    if force_mock or not has_key:
         return _mock_synthesize(inputs)
 
     return await _openai_synthesize(inputs, cfg)
