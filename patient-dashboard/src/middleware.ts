@@ -6,15 +6,10 @@
  * unauthenticated users to /login automatically.
  *
  * Public paths:
- *   /login        — server-rendered page that auto-submits the OIDC
- *                   sign-in (replaces the manual "Sign in with OpenEMR"
- *                   button). This is the assignment-required default
- *                   OAuth2/OIDC entry point.
- *   /launch       — SMART-on-FHIR EHR launch endpoint. Receives
- *                   `?iss=&launch=&pid=` from OpenEMR's demographics.php
- *                   and triggers signIn() with launch context, which
- *                   sends the clinician through the silent OAuth path
- *                   (no consent screen, no password re-prompt).
+ *   /login        — route handler that calls signIn() to start the
+ *                   OAuth2/OIDC dance. Replaces the manual
+ *                   "Sign in with OpenEMR" button. Assignment-required
+ *                   default authentication entry point.
  *   /api/auth/*   — Auth.js's own routes (callback, csrf, providers).
  *   /healthz      — liveness probe; no auth needed.
  *
@@ -28,7 +23,6 @@ export default auth((req) => {
   const { pathname } = req.nextUrl;
   const isPublic =
     pathname.startsWith("/login") ||
-    pathname.startsWith("/launch") ||
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/healthz");
 

@@ -179,35 +179,42 @@ switch ($search_any_type) {
             <?php endif; ?>
 
             <?php
-            // ─── Dashboard style toggle ──────────────────────────────────────
-            // One-click switch between the modern Next.js patient dashboard
-            // and the legacy PHP dashboard. Visible to anyone with chart
-            // access — the toggle only flips a presentation-layer global,
-            // it doesn't expose any extra data, and the legacy/modern pages
-            // both already enforce per-user ACLs at their own entry points.
+            // ─── Open the modern Next.js dashboard in a new tab ──────────────
+            // Standalone app at `patient_dashboard_modern_url`, launched as a
+            // top-level navigation in a new tab (same UX as the Clinical
+            // Co-Pilot button). The dashboard's own /patient/by-pid/{pid}
+            // route resolves the FHIR uuid from the legacy pid, so we don't
+            // have to look it up here.
             //
-            // The CSRF token is minted in the same active session as the
-            // Co-Pilot row above; if the Co-Pilot row didn't run (because
-            // clinical_copilot_url is empty) we mint a fresh one here.
+            // Authentication is the dashboard's own concern: when the new
+            // tab opens, the dashboard's middleware bounces the user
+            // through Auth.js's OAuth2/OIDC sign-in (the assignment-
+            // required login mechanism). The dashboard tab outlives the
+            // OpenEMR session — closing it returns the clinician to the
+            // OpenEMR shell where they were, and the next time they need
+            // the dashboard the tab they already have is reusable.
+            //
+            // Why a plain target="_blank" rather than the previous
+            // toggle-and-iframe-replace pattern: iframe embedding broke
+            // Safari (mixed-content), required a reverse proxy that
+            // tripped Auth.js v5's basePath limits, and triggered
+            // OpenEMR's beforeunload popup on every dashboard switch.
+            // A standalone tab side-steps all of those.
             // ────────────────────────────────────────────────────────────────
             $modernUrl = trim((string) ($GLOBALS['patient_dashboard_modern_url'] ?? ''));
-            $modernOn  = $modernUrl !== '';
-            $themeCsrf = $copilotCsrf
-                ?? \OpenEMR\Common\Csrf\CsrfUtils::collectCsrfToken(
-                    session: \OpenEMR\Common\Session\SessionWrapperFactory::getInstance()->getActiveSession()
-                );
             ?>
-            <div class="btn-group btn-group-sm ml-2" role="group" aria-label="Dashboard style">
-                <a class="btn btn-sm <?php echo $modernOn ? 'btn-dark' : 'btn-outline-secondary'; ?>"
-                   href="/interface/clinical_copilot/toggle-modern-ui.php?csrf_token=<?php echo attr($themeCsrf); ?>"
-                   target="_top"
-                   title="<?php echo xla('Switch dashboard style'); ?>: <?php echo $modernOn
-                        ? xla('currently Modern (Next.js) - click to switch to OpenEMR style')
-                        : xla('currently OpenEMR (PHP) - click to switch to Modern style'); ?>">
-                    <i class="fa <?php echo $modernOn ? 'fa-moon' : 'fa-sun'; ?> mr-1" aria-hidden="true"></i>
-                    <?php echo $modernOn ? xlt('Modern') : xlt('OpenEMR style'); ?>
+            <?php if ($modernUrl !== ''): ?>
+            <div class="btn-group btn-group-sm ml-2" role="group" aria-label="Modern dashboard">
+                <a class="btn btn-sm btn-dark"
+                   data-bind="attr: { href: '<?php echo attr(rtrim($modernUrl, '/')); ?>' + '/patient/by-pid/' + pid() }"
+                   target="_blank"
+                   rel="noopener"
+                   title="<?php echo xla('Open the modern Next.js dashboard for this patient in a new tab'); ?>">
+                    <i class="fa fa-external-link-alt mr-1" aria-hidden="true"></i>
+                    <?php echo xlt('Modern Dashboard'); ?>
                 </a>
             </div>
+            <?php endif; ?>
 
             <!-- ko if: encounterArray().length > 0 -->
             <div class="patientCurrentEncounter mt-2 d-block">
