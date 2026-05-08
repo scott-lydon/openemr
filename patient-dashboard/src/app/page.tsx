@@ -15,10 +15,23 @@
  */
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { ArrowLeftFromLine } from "lucide-react";
 import { auth } from "@/auth";
-import { fhirBase } from "@/lib/env";
+import { env, fhirBase } from "@/lib/env";
 import { SignOutButton } from "@/components/sign-out-button";
 import { Card, CardHeader } from "@/components/card";
+
+/* Mirror of patient/[id]/page.tsx — derive the OpenEMR shell origin
+ * from OPENEMR_ISSUER so the "Back to OpenEMR" link points at the
+ * same instance the dashboard is talking to. Kept inline here to
+ * avoid a tiny shared util just for this. */
+function deriveOpenEmrShellUrl(): string {
+  try {
+    return new URL(env.OPENEMR_ISSUER).origin + "/";
+  } catch {
+    return "https://localhost:9300/";
+  }
+}
 
 const DEMO_PIDS = [
   { pid: "87413", label: "Barbara Boston (gout)" },
@@ -73,9 +86,11 @@ export default async function LandingPage({
     redirect("/login");
   }
 
+  const openemrShellUrl = deriveOpenEmrShellUrl();
+
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-12">
-      <header className="flex items-center justify-between">
+      <header className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
             Patient Dashboard
@@ -84,7 +99,16 @@ export default async function LandingPage({
             Modern reimplementation of the OpenEMR patient view.
           </p>
         </div>
-        <SignOutButton />
+        <div className="flex items-center gap-2">
+          <a
+            href={openemrShellUrl}
+            className="inline-flex items-center gap-1 rounded-md border border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800/40 dark:hover:text-zinc-100"
+          >
+            <ArrowLeftFromLine size={14} />
+            <span>OpenEMR</span>
+          </a>
+          <SignOutButton />
+        </div>
       </header>
 
       {params.error === "not-found" ? (

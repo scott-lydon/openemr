@@ -392,6 +392,15 @@
   html[data-theme="modern"] .gap .lead {
     color: #93c5fd;                      /* blue-300 — slightly brighter for the label */
   }
+  /* The "LAB" / "EXPLAINS RIGHT TOE PAIN" pill badges next to a
+     finding title were rendering as a near-white #eef2f6 fill in
+     dark mode, with the muted-zinc text on top. Both blended into
+     the dark background and washed out the title row. */
+  html[data-theme="modern"] .finding .kind-tag {
+    background: #27272a;                 /* zinc-800 */
+    color: #d4d4d8;                      /* zinc-300 */
+    border: 1px solid #3f3f46;           /* zinc-700 — subtle ring so it reads as a chip */
+  }
   html[data-theme="modern"] section.card {
     background: var(--panel);
   }

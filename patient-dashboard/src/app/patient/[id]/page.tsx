@@ -18,11 +18,30 @@
  * patient with hundreds of rows) don't block fast ones (CareTeam).
  */
 import { Suspense } from "react";
-import { Link } from "lucide-react";
+import { ArrowLeftFromLine, Link } from "lucide-react";
+import { env } from "@/lib/env";
 import { fetchPatientHeader } from "@/lib/fhir/client";
 import { PatientHeaderBar } from "@/components/patient-header";
 import { CardSkeleton } from "@/components/card-skeleton";
 import { SignOutButton } from "@/components/sign-out-button";
+
+/*
+ * Derive the OpenEMR shell origin from the configured OIDC issuer so
+ * the "Back to OpenEMR" link points at the same instance the
+ * dashboard is talking to. OPENEMR_ISSUER is shaped like
+ * "https://localhost:9300/oauth2/default" — strip the path and use
+ * the origin. If parsing fails (misconfig), fall back to the
+ * canonical dev URL so the link still does something useful instead
+ * of rendering as href="".
+ */
+function deriveOpenEmrShellUrl(): string {
+  try {
+    const issuer = new URL(env.OPENEMR_ISSUER);
+    return issuer.origin + "/";
+  } catch {
+    return "https://localhost:9300/";
+  }
+}
 import { AllergiesCard } from "@/components/cards/allergies";
 import { ProblemsCard } from "@/components/cards/problems";
 import { MedicationsCard } from "@/components/cards/medications";
@@ -41,18 +60,37 @@ export default async function PatientPage({
   // fast (handled by error.tsx) rather than surfacing six broken cards.
   const patient = await fetchPatientHeader(id);
 
+  const openemrShellUrl = deriveOpenEmrShellUrl();
+
   return (
     <>
       <PatientHeaderBar patient={patient} />
       <div className="mx-auto flex w-full max-w-screen-2xl flex-col px-4 py-4">
-        <div className="mb-3 flex items-center justify-between">
-          <a
-            href="/"
-            className="inline-flex items-center gap-1 text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            <Link size={14} />
-            <span>Back to picker</span>
-          </a>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-4">
+            <a
+              href="/"
+              className="inline-flex items-center gap-1 text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              <Link size={14} />
+              <span>Back to picker</span>
+            </a>
+            {/*
+             * "Back to OpenEMR" — escape hatch for clinicians who
+             * landed on the modern dashboard via a deep link or who
+             * closed the OpenEMR tab. Points at the OpenEMR shell
+             * origin (derived from OPENEMR_ISSUER above). target="_self"
+             * is intentional: this tab is the dashboard's tab, the
+             * user's done with it.
+             */}
+            <a
+              href={openemrShellUrl}
+              className="inline-flex items-center gap-1 text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              <ArrowLeftFromLine size={14} />
+              <span>Back to OpenEMR</span>
+            </a>
+          </div>
           <SignOutButton />
         </div>
         <main

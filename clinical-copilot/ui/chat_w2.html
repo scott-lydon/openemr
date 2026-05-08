@@ -1132,10 +1132,17 @@ const dz = $('dropzone');
 ['dragleave', 'drop'].forEach(ev =>
   dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('over'); }));
 dz.addEventListener('drop', async (e) => {
+  // stopPropagation so the document-level fallback below doesn't
+  // ALSO see this drop. Without it, dropping on the visible dropzone
+  // fires both handlers and uploads the same file twice (the user
+  // sees two attachment chips for one file).
+  e.stopPropagation();
   await uploadFiles(Array.from(e.dataTransfer.files));
 });
 // Page-wide drop also accepts files, so dragging outside the small zone
-// still works.
+// still works. Only fires when the drop bubbles past the dropzone
+// (the dropzone handler stops propagation when it handled the drop
+// itself).
 ['dragenter', 'dragover'].forEach(ev =>
   document.addEventListener(ev, e => { if (e.dataTransfer && e.dataTransfer.types?.includes('Files')) e.preventDefault(); }));
 document.addEventListener('drop', async (e) => {
