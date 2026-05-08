@@ -357,17 +357,100 @@ function readBootstrap() {
   }
   return { token, patient };
 }
-const { token: TASK_TOKEN, patient: PATIENT_ID } = readBootstrap();
+// `let` so the auto-refresh path can rebind it after a top-level
+// navigation through OpenEMR's refresh-token.php endpoint. (Strictly
+// speaking the page reloads in that path so this is just defensive,
+// but it keeps reads of TOKEN / PATIENT_ID inside this script
+// resilient to a future in-place refresh implementation.)
+let TASK_TOKEN, PATIENT_ID;
+({ token: TASK_TOKEN, patient: PATIENT_ID } = readBootstrap());
 
 if (TASK_TOKEN) {
   try { sessionStorage.setItem('copilot:task_token', TASK_TOKEN); } catch (e) {}
 }
 
-function authFetch(input, init) {
+/**
+ * Trigger a top-level navigation through OpenEMR's refresh-token
+ * endpoint. OpenEMR mints a fresh task token (using the clinician's
+ * still-valid OpenEMR session cookie as identity proof) and 302s
+ * back to the chat with the new token in the URL fragment.
+ *
+ * Why a navigation rather than a fetch: the OpenEMR session cookie's
+ * SameSite policy blocks cross-origin XHR/fetch from the chat
+ * (localhost:8801) to OpenEMR (localhost:9300). Top-level navigations
+ * are exempt, so we accept the page reload — current input + attached
+ * files are lost, conversation history persists via sessionStorage.
+ *
+ * Returns nothing; the page is unloading.
+ */
+function navigateToRefreshTokenEndpoint(reason) {
+  const fhirUuid = (PATIENT_ID || '').replace(/^Patient\//, '');
+  if (!fhirUuid) {
+    console.error('[chat] cannot refresh task token: PATIENT_ID is empty.');
+    setWarn(
+      'Your Co-Pilot session expired and could not be refreshed because the patient id is missing. ' +
+      'Re-launch the Co-Pilot from the OpenEMR patient summary.'
+    );
+    return;
+  }
+  // OpenEMR's HTTPS port is what the dashboard's launch.php uses; we
+  // hard-code it here because the chat tab has no other way to know
+  // what host OpenEMR is on. Ops would parameterize via a meta tag or
+  // a sidecar-served bootstrap config in production.
+  const refreshUrl = new URL('https://localhost:9300/interface/clinical_copilot/refresh-token.php');
+  refreshUrl.searchParams.set('patient_uuid', fhirUuid);
+  // Round-trip back to whatever path the chat is currently on (so
+  // /w2/ stays /w2/, and /  stays /). The fragment is dropped on the
+  // round trip — refresh-token.php builds a fresh fragment.
+  const returnTo = window.location.origin + window.location.pathname;
+  refreshUrl.searchParams.set('return_to', returnTo);
+  console.info('[chat] task token expired:', reason, '→ refreshing via OpenEMR.');
+  window.location.assign(refreshUrl.toString());
+}
+
+/**
+ * Inspect a fetch response and decide whether the body is the
+ * sidecar's specific "task token expired" 401. The sidecar formats
+ * auth errors as `{detail: {error: "token_expired", ...}}`; we match
+ * on that shape so other 401s (missing token, signature mismatch,
+ * scope mismatch) don't trigger a refresh loop.
+ */
+async function isTokenExpiredResponse(response) {
+  if (response.status !== 401) return false;
+  const cloned = response.clone();
+  let payload;
+  try {
+    payload = await cloned.json();
+  } catch (e) {
+    return false;
+  }
+  const errorCode =
+    (payload && payload.detail && payload.detail.error) ||
+    (payload && payload.error);
+  return errorCode === 'token_expired';
+}
+
+/**
+ * Fetch wrapper that:
+ *   1. injects the current task token as a Bearer header;
+ *   2. detects 401 token_expired and triggers a refresh navigation
+ *      (the page unloads — the caller's promise will never resolve).
+ *
+ * The refresh-then-retry pattern is deliberately a navigation, not
+ * an in-place retry — see navigateToRefreshTokenEndpoint for why.
+ */
+async function authFetch(input, init) {
   const opts = init ? { ...init } : {};
   opts.headers = new Headers(opts.headers || {});
   if (TASK_TOKEN) opts.headers.set('Authorization', 'Bearer ' + TASK_TOKEN);
-  return fetch(input, opts);
+  const response = await fetch(input, opts);
+  if (await isTokenExpiredResponse(response)) {
+    navigateToRefreshTokenEndpoint(`401 from ${typeof input === 'string' ? input : input.url}`);
+    // Return a never-resolving promise so the caller doesn't try to
+    // .json() / render the 401 body in parallel with the navigation.
+    return new Promise(() => {});
+  }
+  return response;
 }
 
 function setWarn(text) {

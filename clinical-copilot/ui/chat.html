@@ -523,13 +523,78 @@ function readTokenFromHash() {
   }
   return token;
 }
-const TASK_TOKEN = readTokenFromHash();
+// `let` so the auto-refresh path could rebind it after a top-level
+// navigation through OpenEMR's refresh-token.php endpoint. The page
+// reloads on refresh today, but keeping `let` makes a future
+// in-place rebind a one-line change.
+let TASK_TOKEN = readTokenFromHash();
 
-function authFetch(input, init) {
+/**
+ * Trigger a top-level navigation through OpenEMR's refresh-token
+ * endpoint. OpenEMR mints a fresh task token (using the clinician's
+ * still-valid OpenEMR session cookie as identity proof) and 302s
+ * back here with the new token in the URL fragment.
+ *
+ * Why a navigation rather than a fetch: the OpenEMR session cookie's
+ * SameSite policy blocks cross-origin XHR/fetch from the Co-Pilot
+ * (localhost:8801) to OpenEMR (localhost:9300). Top-level navigations
+ * are exempt, so we accept the page reload — chart cards repopulate
+ * after the round trip.
+ */
+function navigateToRefreshTokenEndpoint(reason) {
+  // The Co-Pilot home reads patient from the URL fragment via
+  // `params.get('patient')`. Pull the active patient from there;
+  // fall back to the patient picker's current value.
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const patientFromHash = hashParams.get('patient') || '';
+  const patientFromPicker = (document.getElementById('patient') || {}).value || '';
+  const patientId = patientFromHash || patientFromPicker || _activeCachePatient || '';
+  const fhirUuid = patientId.replace(/^Patient\//, '');
+  if (!fhirUuid) {
+    console.error('[copilot] cannot refresh task token: no active patient.');
+    return;
+  }
+  const refreshUrl = new URL('https://localhost:9300/interface/clinical_copilot/refresh-token.php');
+  refreshUrl.searchParams.set('patient_uuid', fhirUuid);
+  // Round-trip back to whatever path the Co-Pilot is currently on.
+  // refresh-token.php overwrites the fragment with the fresh token.
+  refreshUrl.searchParams.set('return_to', window.location.origin + window.location.pathname);
+  console.info('[copilot] task token expired:', reason, '→ refreshing via OpenEMR.');
+  window.location.assign(refreshUrl.toString());
+}
+
+/**
+ * Inspect a fetch response and decide whether the body is the
+ * sidecar's specific "task token expired" 401. The sidecar formats
+ * auth errors as `{detail: {error: "token_expired", ...}}`; we match
+ * on that shape so other 401s (missing token, signature mismatch,
+ * scope mismatch) don't trigger a refresh loop.
+ */
+async function isTokenExpiredResponse(response) {
+  if (response.status !== 401) return false;
+  const cloned = response.clone();
+  let payload;
+  try { payload = await cloned.json(); } catch (e) { return false; }
+  const code = (payload && payload.detail && payload.detail.error) || (payload && payload.error);
+  return code === 'token_expired';
+}
+
+/**
+ * Fetch wrapper that injects the current task token AND auto-recovers
+ * from a 401 token_expired by navigating through the OpenEMR refresh
+ * endpoint. The caller's promise stays unresolved during the
+ * navigation so they don't render the 401 body in parallel.
+ */
+async function authFetch(input, init) {
   const opts = init ? { ...init } : {};
   opts.headers = new Headers(opts.headers || {});
   if (TASK_TOKEN) opts.headers.set('Authorization', 'Bearer ' + TASK_TOKEN);
-  return fetch(input, opts);
+  const response = await fetch(input, opts);
+  if (await isTokenExpiredResponse(response)) {
+    navigateToRefreshTokenEndpoint(`401 from ${typeof input === 'string' ? input : input.url}`);
+    return new Promise(() => {});
+  }
+  return response;
 }
 
 function showAuthBanner(message) {
