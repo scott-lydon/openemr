@@ -31,12 +31,19 @@ final class SnapshotRouteRegistrar
 
     public function register(RestApiCreateEvent $event): RestApiCreateEvent
     {
-        $routes = $event->getRouteMap();
-        $routes['GET /api/clinical-copilot/snapshot/:uuid'] = function (string $uuid) {
-            $controller = $this->controller;
-            return $controller->getSnapshot($uuid);
-        };
-        $event->setRouteMap($routes);
+        // RestApiCreateEvent does not expose a setRouteMap() setter; use the
+        // additive addToRouteMap() helper instead. The original (missing-
+        // method) implementation raised a fatal on every FHIR request because
+        // OpenEMR's FhirRouteFinder dispatches this event for every call to
+        // /apis/default/fhir/*, and an uncaught fatal inside any listener
+        // surfaces as an HTTP 500 from the FHIR endpoint.
+        $event->addToRouteMap(
+            'GET /api/clinical-copilot/snapshot/:uuid',
+            function (string $uuid) {
+                $controller = $this->controller;
+                return $controller->getSnapshot($uuid);
+            }
+        );
         return $event;
     }
 }
