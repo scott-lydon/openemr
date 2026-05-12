@@ -593,7 +593,7 @@ function navigateToRefreshTokenEndpoint(reason) {
     console.error('[copilot] cannot refresh task token: no active patient.');
     return;
   }
-  const refreshUrl = new URL('https://localhost:9300/interface/clinical_copilot/refresh-token.php');
+  const refreshUrl = new URL('https://localhost:9300/interface/modules/custom_modules/oe-module-clinical-copilot/public/refresh-token.php');
   refreshUrl.searchParams.set('patient_uuid', fhirUuid);
   // Round-trip back to whatever path the Co-Pilot is currently on.
   // refresh-token.php overwrites the fragment with the fresh token.

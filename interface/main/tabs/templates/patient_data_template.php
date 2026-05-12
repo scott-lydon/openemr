@@ -169,7 +169,7 @@ switch ($search_any_type) {
             ?>
             <div class="btn-group btn-group-sm ml-2" role="group" aria-label="Clinical Co-Pilot">
                 <a class="btn btn-sm btn-primary"
-                   data-bind="attr: { href: '/interface/clinical_copilot/launch.php?pid=' + pid() + '&purpose=diagnostic_cross_check&csrf_token=<?php echo attr($copilotCsrf); ?>' }"
+                   data-bind="attr: { href: '/interface/modules/custom_modules/oe-module-clinical-copilot/public/launch.php?pid=' + pid() + '&purpose=diagnostic_cross_check&csrf_token=<?php echo attr($copilotCsrf); ?>' }"
                    target="copilot"
                    onclick="top.restoreSession();"
                    title="<?php echo xla("Open the Clinical Co-Pilot AI diagnostic cross-check for this patient"); ?>">

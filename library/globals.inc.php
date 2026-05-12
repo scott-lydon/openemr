@@ -2958,33 +2958,12 @@ $GLOBALS_METADATA = [
     //
     'Miscellaneous' => [
 
-        // ─── Clinical Co-Pilot (AI sidecar) ─────────────────────────────
-        // These two settings configure the patient-summary launch button
-        // for the Clinical Co-Pilot sidecar (clinical-copilot/).
-        //
-        // The signing key MUST exactly match the sidecar's
-        // COPILOT_BFF_JWT_SIGNING_KEY env var: the PHP launch endpoint
-        // uses it to mint a 5-minute HS256 task token, and the sidecar
-        // uses it to verify the token. Generate a fresh 32-byte random
-        // value on first install:
-        //
-        //     openssl rand -hex 32
-        //
-        // Leaving the default value disables the launch button (the
-        // sidecar refuses to mint or verify with the placeholder).
-        'clinical_copilot_url' => [
-            xl('Clinical Co-Pilot Sidecar URL'),
-            'text',
-            '',
-            xl('Base URL for the Clinical Co-Pilot sidecar (no trailing slash). Empty disables the launch button. Example: http://5.161.253.237:8801'),
-        ],
-
-        'clinical_copilot_jwt_signing_key' => [
-            xl('Clinical Co-Pilot JWT Signing Key'),
-            'text',
-            '',
-            xl('Shared secret used to mint task tokens for the sidecar. Must equal the sidecar\'s COPILOT_BFF_JWT_SIGNING_KEY. Generate with: openssl rand -hex 32. Empty disables the launch button.'),
-        ],
+        // NOTE: Clinical Co-Pilot settings were moved into the
+        // oe-module-clinical-copilot module's private settings table
+        // (module_oe_clinical_copilot_settings). Configure the sidecar
+        // URL and JWT signing key from the module's admin page rather
+        // than here, so installing/uninstalling the module leaves no
+        // stale rows behind in the OpenEMR core globals.
 
         'enable_database_connection_pooling' => [
             xl('Enable Database Connection Pooling'),

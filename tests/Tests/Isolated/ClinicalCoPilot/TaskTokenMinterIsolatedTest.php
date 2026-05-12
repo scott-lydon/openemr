@@ -20,8 +20,8 @@ declare(strict_types=1);
 namespace OpenEMR\Tests\Isolated\ClinicalCoPilot;
 
 use InvalidArgumentException;
-use OpenEMR\ClinicalCoPilot\TaskTokenConfigurationError;
-use OpenEMR\ClinicalCoPilot\TaskTokenMinter;
+use OpenEMR\Modules\ClinicalCoPilot\TaskTokenConfigurationError;
+use OpenEMR\Modules\ClinicalCoPilot\TaskTokenMinter;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 

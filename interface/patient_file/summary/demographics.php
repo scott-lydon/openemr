@@ -1097,43 +1097,11 @@ $oemr_ui = new OemrUI($arrOeUiSettings);
         }
         ?>
         <div class="main mb-1">
-            <!-- ─── Clinical Co-Pilot launch button ─────────────────────────
-                The button posts the patient pid + a CSRF token to the
-                Clinical Co-Pilot launch endpoint, which:
-                  1. ACL-checks the user against this patient,
-                  2. mints a 5-minute HS256 JWT bound to (user, patient, purpose),
-                  3. 302-redirects to the sidecar URL with the token in
-                     the URL fragment (so it never hits the sidecar's
-                     HTTP access log).
-                The button is hidden if the sidecar URL global is unset
-                so a half-configured deploy doesn't surface a broken link.
-            ─────────────────────────────────────────────────────────────── -->
-            <?php
-                $copilotBase = OEGlobalsBag::getInstance()->getString('clinical_copilot_url');
-                if ($copilotBase !== '') {
-                    $launchHref = '../../clinical_copilot/launch.php?'
-                        . http_build_query([
-                            'pid' => $pid,
-                            'purpose' => 'diagnostic_cross_check',
-                            'csrf_token' => \OpenEMR\Common\Csrf\CsrfUtils::collectCsrfToken(
-                                session: \OpenEMR\Common\Session\SessionWrapperFactory::getInstance()->getActiveSession()
-                            ),
-                        ]);
-            ?>
-            <div class="d-flex align-items-center mb-2 px-1" style="gap: 10px;">
-                <a href="<?php echo attr($launchHref); ?>"
-                   target="copilot_<?php echo attr($pid); ?>"
-                   class="btn btn-primary btn-sm"
-                   onclick="top.restoreSession();"
-                   title="<?php echo xla('Open the AI diagnostic cross-check and chart-error scan for this patient'); ?>">
-                    <i class="fa fa-stethoscope mr-1" aria-hidden="true"></i>
-                    <?php echo xlt('Clinical Co-Pilot (AI)'); ?>
-                </a>
-                <small class="text-muted">
-                    <?php echo xlt('Diagnostic considerations + chart-error review. Read-only. Citations required.'); ?>
-                </small>
-            </div>
-            <?php } ?>
+            <!-- Clinical Co-Pilot launch button is rendered by
+                 PatientSummaryRenderListener (oe-module-clinical-copilot)
+                 via the RenderEvent::EVENT_SECTION_LIST_RENDER_TOP
+                 dispatch above. Nothing renders here when the module
+                 is not installed or the sidecar URL is unset. -->
             <!-- start main content div -->
             <div class="row">
                 <?php

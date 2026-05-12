@@ -417,7 +417,7 @@ function navigateToRefreshTokenEndpoint(reason) {
   // hard-code it here because the chat tab has no other way to know
   // what host OpenEMR is on. Ops would parameterize via a meta tag or
   // a sidecar-served bootstrap config in production.
-  const refreshUrl = new URL('https://localhost:9300/interface/clinical_copilot/refresh-token.php');
+  const refreshUrl = new URL('https://localhost:9300/interface/modules/custom_modules/oe-module-clinical-copilot/public/refresh-token.php');
   refreshUrl.searchParams.set('patient_uuid', fhirUuid);
   // Round-trip back to whatever path the chat is currently on (so
   // /w2/ stays /w2/, and /  stays /). The fragment is dropped on the

@@ -1,0 +1,34 @@
+{
+    "name": "openemr/oe-module-clinical-copilot",
+    "description": "Clinical Co-Pilot for OpenEMR. Pairwise diagnostic cross-check and chart-error scan over a separately-hosted FHIR-isolated sidecar. The PHP module is GPL-3.0; the sidecar is a private upstream that talks to OpenEMR only over FHIR.",
+    "type": "openemr-module",
+    "license": "GPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "Scott Lydon",
+            "email": "relays.inanity.0n@icloud.com"
+        }
+    ],
+    "minimum-stability": "stable",
+    "autoload": {
+        "psr-4": {
+            "OpenEMR\\Modules\\ClinicalCoPilot\\": "src/"
+        }
+    },
+    "require": {
+        "php": "^8.2",
+        "ext-json": "*",
+        "ext-openssl": "*",
+        "ext-curl": "*",
+        "symfony/event-dispatcher-contracts": "^3.5"
+    },
+    "extra": {
+        "module": {
+            "name": "Clinical Co-Pilot",
+            "type": "custom",
+            "category": "Clinical",
+            "namespace": "OpenEMR\\Modules\\ClinicalCoPilot\\",
+            "homepage": "https://github.com/scott-lydon/oe-module-clinical-copilot"
+        }
+    }
+}

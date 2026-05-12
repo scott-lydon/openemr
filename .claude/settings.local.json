@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python --version)",
+      "Bash(.venv/bin/uvicorn --version)",
+      "Bash(.venv/bin/python -c \"import sidecar.main; import bff.main; print\\('imports ok'\\)\")",
+      "Bash(.venv/bin/pip list *)",
+      "Bash(open *)",
+      "Bash(ssh *)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -sS -i -X POST https://stylus-detention-drowsily.ngrok-free.dev/agent-api/v1/w2-chat -H 'Content-Type: application/json' -H 'X-Patient-Id: Patient/87413' -d '{\"message\":\"What diseases does she have?\",\"conversation\":[]}' --max-time 60)",
+      "Bash(.venv/bin/python -c ' *)"
+    ]
+  }
+}

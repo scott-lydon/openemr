@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# pre-push hook for the W2 build.
+#
+# Runs the unit-test suite + the eval meta-test before allowing a push.
+# A push that would land a broken commit on the remote is rejected
+# locally, before the network call. The Continuous Integration (CI)
+# eval gate is the second line of defense; this hook saves a CI run.
+#
+# Bypass:
+#
+#   git push --no-verify
+#
+# AND add a "Bypass:" comment to the head commit. Continuous
+# Integration lints for the comment so a bypass without justification
+# never lands.
+#
+# Install with:
+#
+#   bash clinical-copilot/scripts/install_hooks.sh
+#
+# Tagging: this hook runs in the [Local Mac terminal] and refuses the
+# push there. It does not call the network until tests pass.
+
+set -uo pipefail
+
+# Resolve clinical-copilot relative to the repo root so the hook works
+# from any working directory.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+CC="$REPO_ROOT/clinical-copilot"
+
+if [ ! -d "$CC" ]; then
+  echo "[pre-push] clinical-copilot directory not found at $CC; skipping." >&2
+  exit 0
+fi
+
+# Determine which files this push touches. Skip the hook entirely when
+# the push touches no clinical-copilot file (a docs-only push elsewhere
+# in the repo should not pay for our tests).
+range="$(git rev-parse --abbrev-ref HEAD)"
+changed=$(git diff --name-only origin/$range...$range -- "clinical-copilot/" 2>/dev/null || true)
+if [ -z "$changed" ]; then
+  exit 0
+fi
+
+cd "$CC"
+
+echo "[pre-push] running clinical-copilot pre-push checks"
+
+# 1. Unit + repo hygiene tests. The eval suite is too slow for a hook
+#    (CI runs it). Hygiene + sidecar unit tests are fast enough to run
+#    locally.
+if ! python -m pytest tests/repo/ tests/sidecar/ -q --maxfail=1; then
+  echo "[pre-push] tests failed; refusing the push." >&2
+  exit 1
+fi
+
+# 2. Eval meta-test. Catches case authoring regressions before CI.
+if ! python -m pytest evals/golden_w2/test_meta.py -q --maxfail=1; then
+  echo "[pre-push] eval meta-test failed; refusing the push." >&2
+  exit 1
+fi
+
+echo "[pre-push] all checks passed"
+exit 0

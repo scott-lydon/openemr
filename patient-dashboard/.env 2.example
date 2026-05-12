@@ -1,0 +1,48 @@
+# Patient Dashboard — environment configuration
+#
+# Copy to .env.local and fill in real values for local dev.
+# Production values live in docker-compose.yml or the deploy host's env.
+
+# ============================================================
+# OAuth2 / OpenID Connect against OpenEMR
+# ============================================================
+# OpenEMR's OIDC issuer URL. The dashboard discovers /authorize, /token,
+# /userinfo, and /jwk under this base.
+#
+# Local Docker dev:  http://openemr or http://localhost:8300
+# Hetzner staging:   http://5.161.253.237
+OPENEMR_ISSUER=http://localhost:8300/oauth2/default
+
+# Confidential client credentials. Provision via:
+#   bash scripts/register-oauth-client.sh
+# which calls OpenEMR's /oauth2/default/registration endpoint.
+OPENEMR_CLIENT_ID=
+OPENEMR_CLIENT_SECRET=
+
+# Where the dashboard finds OpenEMR's FHIR R4 surface.
+# Trailing slash matters; the FHIR client appends paths directly.
+OPENEMR_FHIR_BASE=http://localhost:8300/apis/default/fhir/
+
+# In dev against the OpenEMR self-signed HTTPS cert, set this to "0" so
+# fetch() doesn't refuse the connection. NEVER set to 0 in production.
+OPENEMR_FHIR_VERIFY_SSL=1
+
+# ============================================================
+# Auth.js (next-auth v5)
+# ============================================================
+# 32-byte hex secret used to sign session JWTs. Generate with:
+#   openssl rand -hex 32
+AUTH_SECRET=
+
+# The dashboard's own URL. Auth.js uses this to construct redirect URIs.
+AUTH_URL=http://localhost:8400
+
+# Trust the X-Forwarded-* headers when behind the docker reverse proxy.
+AUTH_TRUST_HOST=1
+
+# ============================================================
+# Optional
+# ============================================================
+# When set, the dashboard's /healthz reports the git sha so we can confirm
+# the deployed image matches the expected commit. Populated at build time.
+NEXT_PUBLIC_BUILD_SHA=dev

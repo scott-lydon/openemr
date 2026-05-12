@@ -177,12 +177,12 @@ The reconciliation step (a deterministic Python module, not an LLM) is the most 
 ### 2.2 Snapshot caching and invalidation
 
 - Snapshot keyed by `(pid, snapshot_version)`. Default Time-To-Live (TTL) 24 hours.
-- Invalidated by Symfony `EventDispatcher` hooks on chart edits (a small new listener under `src/RestControllers/Agent/`), with an HTTP webhook to the snapshot service.
+- Invalidated by Symfony `EventDispatcher` hooks on chart edits (a small new listener under `interface/modules/custom_modules/oe-module-clinical-copilot/src/Rest/`), with an HTTP webhook to the snapshot service.
 - Worst case: clinician sees a 24-hour-stale snapshot. Mitigated by a "freshness" line in every response and a one-click "refresh" button.
 
 ### 2.3 The internal Read API
 
-A new controller at `src/RestControllers/Agent/SnapshotController.php` exposes:
+A new controller at `interface/modules/custom_modules/oe-module-clinical-copilot/src/Rest/SnapshotController.php` exposes:
 
 - `GET /agent-api/v1/patients/{pid}/snapshot` (returns the JSON above)
 - `GET /agent-api/v1/patients/{pid}/notes?since=...` (paginated free-text encounter notes for embedding)
