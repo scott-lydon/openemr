@@ -245,35 +245,43 @@ async def post_patient_document(
                 filename=(file.filename or "document.pdf"),
                 mime_hint=file.content_type or "application/pdf",
             )
-        except Exception as push_exc:  # noqa: BLE001 — see comment above
-            # Inline print so the failure cause is visible in stdout
-            # without configuring structured logging. The `extra=` keys
-            # below are ignored by the default formatter.
+        except Exception as push_exc:  # noqa: BLE001 — converted to HTTP below
+            # Surface push failures to the chat client instead of
+            # silently returning a mock UploadResult that promises the
+            # doc is in OpenEMR when it isn't. The previous behavior
+            # (catch-log-and-continue) hid Hetzner-vs-local regressions
+            # for days — that is exactly the failure mode this turn was
+            # filed to fix.
+            #
+            # The RuntimeError raised by _push_to_openemr_documents_store
+            # already contains a comprehensive diagnostic message naming
+            # the exact env var to check, status code meaning, etc. We
+            # forward that message verbatim so the chat UI / ops can act
+            # without having to tail sidecar logs.
             import traceback
-            print(
-                f"[mock_openemr_push_failed] {type(push_exc).__name__}: {push_exc!s}\n"
-                f"{traceback.format_exc()}",
-                flush=True,
-            )
-            logger.warning(
-                "mock_openemr_push_failed",
+
+            traceback.print_exc()
+            logger.error(
+                "openemr_push_failed_propagating",
                 extra={
                     "error_type": type(push_exc).__name__,
                     "error_message": str(push_exc),
                     "patient_id": context.patient_id,
-                    "hint": (
-                        "The chat upload succeeded but the document "
-                        "could not be inserted into OpenEMR's documents "
-                        "store. Check: (a) the docker compose stack "
-                        "is running and the openemr container is "
-                        "healthy, (b) the patient_id maps to a real "
-                        "patient_data.pid via FHIR uuid lookup, (c) "
-                        "the openemr container can read "
-                        "/var/www/localhost/htdocs/openemr/interface/"
-                        "clinical_copilot/cli-store-document.php."
-                    ),
                 },
             )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "error": "openemr_push_failed",
+                    "message": (
+                        "Upload was accepted by the sidecar but pushing "
+                        "the document into OpenEMR failed. The chat will "
+                        "not be able to reference this document. "
+                        f"Cause: {type(push_exc).__name__}: {push_exc!s}"
+                    ),
+                    "code": "openemr_push",
+                },
+            ) from push_exc
         return result
 
     try:
@@ -331,26 +339,23 @@ async def _push_to_openemr_documents_store(
     patient_id: str,
     filename: str,
     mime_hint: str,
-) -> None:
+) -> dict:
     """Insert the uploaded document into OpenEMR's documents store.
 
-    Calls ``interface/clinical_copilot/cli-store-document.php`` via
-    ``docker exec``. The CLI uses ``\\Document::createDocument`` —
-    same code path the Documents UI uses — so storage, hashing,
-    encryption and category linkage are all OpenEMR-correct.
+    Posts to ``interface/clinical_copilot/store-document.php`` over
+    HTTP. That endpoint validates a shared secret in the
+    ``X-Copilot-Token`` header and calls OpenEMR's
+    ``\\Document::createDocument`` — same code path the Documents UI
+    uses — so storage, hashing, encryption, and category linkage are
+    OpenEMR-correct.
 
-    ``patient_id`` arrives as ``Patient/<fhir-uuid>``. The CLI takes
-    the legacy numeric ``pid``, so we run a quick lookup against
-    ``patient_data.uuid`` to translate.
+    The endpoint accepts ``patient_fhir_uuid`` and resolves the legacy
+    numeric pid in PHP, so we do not need a second round trip (which
+    previously required ``docker exec mysql``, also a local-dev hack).
 
-    Mock mode bypasses Postgres + ClamAV + the worker queue, but the
-    user-visible demo flow ('drag a PDF in chat, see it in the patient
-    profile') requires the document to actually land in OpenEMR — that's
-    what this function ensures.
+    Why HTTP instead of OpenEMR's standard REST/FHIR endpoints:
 
-    Why ``docker exec`` and not a network call:
-
-      - OpenEMR's FHIR DocumentReference advertises ``create`` in
+      - OpenEMR's FHIR ``DocumentReference`` advertises ``create`` in
         the CapabilityStatement but the controller has no POST handler;
         every POST returns 404 "Route not found".
 
@@ -360,13 +365,56 @@ async def _push_to_openemr_documents_store(
         client_credentials grant which produces system tokens; the
         ACL check fails. Switching grants is a much bigger refactor.
 
-    Raises a ``RuntimeError`` on any failure path so the caller's
-    ``except`` logs the structured cause.
+      - The earlier implementation used ``docker compose exec`` against
+        a CLI helper. That path was inherently local-dev-only: the
+        sidecar container on production has no docker socket, no
+        compose file, and no docker binary. The HTTP endpoint replaces
+        that.
+
+    Required env vars (sidecar):
+
+      ``COPILOT_OPENEMR_DOC_PUSH_URL``    — full URL to the endpoint,
+          e.g. ``https://localhost:9300/interface/clinical_copilot/store-document.php``
+          locally or ``https://5-161-253-237.sslip.io/interface/clinical_copilot/store-document.php``
+          on Hetzner.
+      ``COPILOT_OPENEMR_DOC_PUSH_SECRET`` — must match
+          ``COPILOT_STORE_DOCUMENT_SECRET`` set on the OpenEMR side.
+      ``COPILOT_FHIR_VERIFY_SSL`` — reused; set ``false`` to accept
+          self-signed certs (local dev, Hetzner pre-Caddy).
+
+    Returns the JSON dict from OpenEMR on success (contains
+    ``document_id``, ``filename``, ``size``, ``category``,
+    ``category_id``, ``patient_pid``).
+
+    Raises ``RuntimeError`` with a comprehensive cause on any failure
+    path so the caller can present an actionable message to the user
+    and the sidecar log contains the diagnosis without further digging.
     """
-    import asyncio
     import base64
-    import binascii
-    import json
+    import os
+
+    import httpx
+
+    push_url = os.environ.get("COPILOT_OPENEMR_DOC_PUSH_URL", "").strip()
+    push_secret = os.environ.get("COPILOT_OPENEMR_DOC_PUSH_SECRET", "").strip()
+    if not push_url:
+        raise RuntimeError(
+            "COPILOT_OPENEMR_DOC_PUSH_URL is missing or empty in the "
+            "sidecar environment. The sidecar cannot push uploaded "
+            "documents into OpenEMR without it. Set it in "
+            "clinical-copilot/.env (local) or the deployed .env (Hetzner). "
+            "Example: "
+            "https://localhost:9300/interface/clinical_copilot/store-document.php"
+        )
+    if not push_secret:
+        raise RuntimeError(
+            "COPILOT_OPENEMR_DOC_PUSH_SECRET is missing or empty in the "
+            "sidecar environment. The sidecar cannot authenticate to "
+            "OpenEMR's store-document.php endpoint without it. Set it in "
+            "clinical-copilot/.env (local) or the deployed .env (Hetzner), "
+            "and set the matching COPILOT_STORE_DOCUMENT_SECRET on the "
+            "OpenEMR container side."
+        )
 
     if not patient_id.startswith("Patient/"):
         raise RuntimeError(
@@ -376,83 +424,70 @@ async def _push_to_openemr_documents_store(
         )
     fhir_uuid = patient_id.split("/", 1)[1]
 
-    # Look up the legacy numeric pid for this FHIR uuid. The compose
-    # path and database creds are well-known for the development-easy
-    # stack; production deployments would parameterize via env.
-    repo_root = _resolve_repo_root_for_docker_exec()
-    compose_file = (
-        repo_root / "docker" / "development-easy" / "docker-compose.yml"
+    verify_ssl = (
+        os.environ.get("COPILOT_FHIR_VERIFY_SSL", "true").strip().lower()
+        != "false"
     )
-    if not compose_file.is_file():
-        raise RuntimeError(
-            f"docker-compose file not found at {compose_file!s}. The "
-            "sidecar needs the OpenEMR compose stack to insert documents "
-            "via cli-store-document.php. Either start the docker stack "
-            "or add a non-mock path that uses the production OAuth flow."
-        )
 
-    pid = await _resolve_pid_from_fhir_uuid(compose_file, fhir_uuid)
-    if pid is None:
-        raise RuntimeError(
-            f"No patient_data row has uuid matching FHIR uuid {fhir_uuid!r}. "
-            "Either the patient was deleted between launch and upload, "
-            "or the launch token's patient_id wasn't translated correctly."
-        )
+    payload = {
+        "patient_fhir_uuid": fhir_uuid,
+        "category": "Lab Report",
+        "filename": filename,
+        "mime": mime_hint,
+        "bytes_base64": base64.b64encode(body).decode("ascii"),
+    }
+    headers = {
+        "X-Copilot-Token": push_secret,
+        "Content-Type": "application/json",
+        # Suppress browser-style XSRF + accept-language defaults so the
+        # request reads as machine-to-machine in the OpenEMR Apache log.
+        "User-Agent": "clinical-copilot-sidecar/store-document",
+    }
 
-    # Encode the body for the CLI. base64 is simpler + safer than passing
-    # raw bytes through the docker exec arg list (which doesn't handle
-    # NULs or large args well).
     try:
-        bytes_b64 = base64.b64encode(body).decode("ascii")
-    except (binascii.Error, TypeError, ValueError) as exc:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            verify=verify_ssl,
+            follow_redirects=False,
+        ) as client:
+            resp = await client.post(push_url, json=payload, headers=headers)
+    except httpx.RequestError as exc:
         raise RuntimeError(
-            f"Failed to base64-encode upload body: {exc}"
+            f"Could not reach OpenEMR store-document.php at {push_url}. "
+            f"httpx error: {type(exc).__name__}: {exc!s}. "
+            "Confirm: (a) the URL is reachable from the sidecar's network "
+            "(curl it from inside the sidecar container if running in "
+            "docker), (b) the OpenEMR container is running and serving "
+            "/interface/clinical_copilot/store-document.php, (c) "
+            "COPILOT_FHIR_VERIFY_SSL=false if the cert is self-signed."
         ) from exc
 
-    cli_path = (
-        "/var/www/localhost/htdocs/openemr/interface/"
-        "clinical_copilot/cli-store-document.php"
-    )
-    cmd = [
-        "docker",
-        "compose",
-        "-f", str(compose_file),
-        "exec", "-T", "openemr",
-        "php", cli_path,
-        f"--pid={pid}",
-        "--category=Lab Report",
-        f"--filename={filename}",
-        f"--mime={mime_hint}",
-        f"--bytes-base64={bytes_b64}",
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout_bytes, stderr_bytes = await proc.communicate()
-    stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
-    stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
-
-    if proc.returncode != 0:
+    if resp.status_code != 200:
+        body_text = resp.text[:1000] if resp.text else ""
         raise RuntimeError(
-            f"cli-store-document.php exited {proc.returncode}. "
-            f"stderr: {stderr[:500]!r}; stdout: {stdout[:500]!r}"
+            f"OpenEMR store-document.php returned HTTP {resp.status_code}. "
+            f"URL: {push_url}. Response body: {body_text!r}. "
+            "Common causes by status: "
+            "401 = bad X-Copilot-Token (sidecar secret != OpenEMR secret); "
+            "404 = patient_fhir_uuid not in patient_data; "
+            "422 = the named category does not exist in OpenEMR; "
+            "503 = OpenEMR's COPILOT_STORE_DOCUMENT_SECRET is unset "
+            "(endpoint refuses to start without it); "
+            "Apache HTML page = the script is missing from the deployed "
+            "OpenEMR (check the auto-deploy log)."
         )
 
-    # The CLI's last stdout line is a JSON object on success.
     try:
-        last_line = stdout.splitlines()[-1] if stdout else ""
-        result = json.loads(last_line)
-    except (IndexError, json.JSONDecodeError) as exc:
+        result = resp.json()
+    except ValueError as exc:
         raise RuntimeError(
-            f"cli-store-document.php exited 0 but stdout was not JSON. "
-            f"stdout: {stdout[:500]!r}; stderr: {stderr[:500]!r}"
+            f"OpenEMR store-document.php returned non-JSON on 200: "
+            f"{resp.text[:500]!r}. URL: {push_url}."
         ) from exc
 
-    if "document_id" not in result:
+    if not isinstance(result, dict) or "document_id" not in result:
         raise RuntimeError(
-            f"cli-store-document.php returned JSON without document_id: "
+            f"OpenEMR store-document.php response missing document_id: "
             f"{result!r}"
         )
 
@@ -461,85 +496,16 @@ async def _push_to_openemr_documents_store(
         extra={
             "document_id": result.get("document_id"),
             "patient_id": patient_id,
-            "patient_pid": pid,
+            "patient_pid": result.get("patient_pid"),
             # NOTE: don't put a key called 'filename' here — that name
             # is reserved by Python's LogRecord and the logger raises
             # 'Attempt to overwrite filename in LogRecord' if we try.
-            # Same for 'name', 'message', 'levelname', 'pathname', etc.
-            # See logging.LogRecord docs.
             "document_filename": filename,
             "byte_size": len(body),
             "category": result.get("category"),
         },
     )
-
-
-def _resolve_repo_root_for_docker_exec():
-    """Walk up from this file until we find docker/development-easy.
-
-    The sidecar is checked into the OpenEMR repo at
-    ``clinical-copilot/`` and the compose file is at
-    ``docker/development-easy/docker-compose.yml``. Walking up from
-    the current file's path finds the repo root without baking the
-    layout into a constant — moving the sidecar inside the repo
-    doesn't break this helper.
-    """
-    from pathlib import Path
-
-    here = Path(__file__).resolve()
-    for ancestor in here.parents:
-        if (ancestor / "docker" / "development-easy").is_dir():
-            return ancestor
-    raise RuntimeError(
-        "Could not locate the OpenEMR repo root from "
-        f"{here!s}. Walked up to {here.parents[-1]!s} without finding "
-        "docker/development-easy/. Either run the sidecar from inside "
-        "the OpenEMR clone, or wire COPILOT_OPENEMR_REPO_ROOT in env."
-    )
-
-
-async def _resolve_pid_from_fhir_uuid(
-    compose_file,
-    fhir_uuid: str,
-) -> int | None:
-    """Look up the numeric pid for a FHIR uuid.
-
-    The patient_data.uuid column stores the binary form (16 bytes); the
-    FHIR uuid is the dashed string. We pass the string form as
-    ``UNHEX(REPLACE(?, '-', ''))`` so the comparison works against the
-    binary column.
-    """
-    import asyncio
-
-    sql = (
-        "SELECT pid FROM patient_data WHERE "
-        "uuid = UNHEX(REPLACE('" + fhir_uuid.replace("'", "") + "', '-', '')) "
-        "LIMIT 1;"
-    )
-    cmd = [
-        "docker",
-        "compose",
-        "-f", str(compose_file),
-        "exec", "-T", "openemr",
-        "mysql", "-u", "openemr", "-popenemr", "openemr",
-        "-N",  # skip column names header
-        "-e", sql,
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout_bytes, _ = await proc.communicate()
-    if proc.returncode != 0:
-        return None
-    out = stdout_bytes.decode("utf-8", errors="replace").strip()
-    # Filter out the mariadb deprecation warning that prefixes stdout.
-    for line in out.splitlines():
-        line = line.strip()
-        if line.isdigit():
-            return int(line)
-    return None
+    return result
 
 
 async def _read_body_capped(upload: UploadFile, cap_bytes: int) -> bytes:
