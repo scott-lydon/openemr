@@ -54,8 +54,20 @@
 declare(strict_types=1);
 
 if (php_sapi_name() !== 'cli') {
+    // STDERR is only defined in CLI context. Using fwrite(STDERR, ...)
+    // here throws "Undefined constant STDERR" which makes Apache return
+    // a misleading 500 instead of the 403 the user actually deserves.
+    // The HTTP-side substitute is `store-document.php`; we point at it
+    // explicitly so a misaddressed sidecar surfaces a clear redirect
+    // rather than the confusing "method not allowed" of a fatal.
     http_response_code(403);
-    fwrite(STDERR, "cli-store-document.php is CLI-only and must not be reachable over HTTP.\n");
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode([
+        'error' => 'cli_only',
+        'message' => 'cli-store-document.php is invokable only as a CLI '
+            . 'script. For HTTP, POST to store-document.php in the same '
+            . 'directory (validates X-Copilot-Token shared secret).',
+    ]) . "\n";
     exit(1);
 }
 
