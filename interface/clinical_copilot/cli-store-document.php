@@ -77,8 +77,7 @@ $_GET['site']             = $_GET['site']             ?? 'default';
 $ignoreAuth = true;
 
 require_once __DIR__ . '/../globals.php';
-
-use OpenEMR\Common\Logging\SystemLogger;
+require_once __DIR__ . '/_store_document_impl.php';
 
 function _bail(string $code, string $message, int $exitCode = 2): never
 {
@@ -106,12 +105,6 @@ $filename  = (string) ($opts['filename'] ?? '');
 $mime      = (string) ($opts['mime'] ?? 'application/pdf');
 $bytesB64  = (string) ($opts['bytes-base64'] ?? '');
 
-if ($pid <= 0) {
-    _bail('missing_pid', "Pass --pid=<int>.");
-}
-if ($filename === '') {
-    _bail('missing_filename', "Pass --filename=<string>.");
-}
 if ($bytesB64 === '') {
     _bail('missing_bytes', "Pass --bytes-base64=<base64-encoded-bytes>.");
 }
@@ -121,79 +114,19 @@ if ($bytes === false || $bytes === '') {
     _bail('bad_base64', "--bytes-base64 did not decode to non-empty bytes.");
 }
 
-// Verify the patient exists. createDocument silently writes the file
-// even for nonexistent pids, leaving an orphan row, so check up-front.
-$patientRow = sqlQuery('SELECT pid, fname, lname FROM patient_data WHERE pid = ?', [$pid]);
-if (empty($patientRow)) {
-    _bail('no_such_patient', "patient_data has no row with pid=$pid.");
-}
-
-// Resolve the category id by name. The standard categories are seeded
-// by OpenEMR (Lab Report id=2, Patient Information id=1, etc.), but
-// custom installs may not have them — fail loudly rather than write to
-// "uncategorized".
-$categoryRow = sqlQuery('SELECT id FROM categories WHERE name = ?', [$category]);
-if (empty($categoryRow)) {
-    _bail(
-        'no_such_category',
-        "categories has no row with name=" . var_export($category, true) . ". "
-        . "Either pass --category=<existing> or create it via Admin -> "
-        . "Forms -> Layouts -> Document Categories."
-    );
-}
-$categoryId = (int) $categoryRow['id'];
-
-$logger = new SystemLogger();
-
-try {
-    $doc = new \Document();
-    // createDocument signature:
-    //   createDocument(pid, categoryId, filename, mimetype, fileBytes, ...)
-    // returns '' on success, an error message string otherwise.
-    $err = $doc->createDocument(
-        $pid,
-        $categoryId,
-        $filename,
-        $mime,
-        $bytes,
-    );
-} catch (\Throwable $exc) {
-    $logger->error('cli_store_document.create_threw', [
-        'pid' => $pid,
-        'category' => $category,
-        'filename' => $filename,
-        'error' => $exc->getMessage(),
-    ]);
-    _bail('create_threw', "\\Document::createDocument threw: " . $exc->getMessage());
-}
-
-if (!empty($err)) {
-    // createDocument returns a non-empty string on failure. Surface
-    // OpenEMR's exact message so the sidecar log explains the cause.
-    _bail('create_failed', "\\Document::createDocument returned non-empty: " . $err);
-}
-
-$documentId = (int) $doc->get_id();
-if ($documentId <= 0) {
-    _bail('no_id', "\\Document::createDocument succeeded but get_id() is non-positive ($documentId).");
-}
-
-$logger->info('cli_store_document.ok', [
-    'pid' => $pid,
-    'document_id' => $documentId,
-    'filename' => $filename,
-    'size' => strlen($bytes),
-]);
-
-fwrite(
-    STDOUT,
-    json_encode([
-        'document_id' => $documentId,
-        'filename' => $filename,
-        'size' => strlen($bytes),
-        'category' => $category,
-        'category_id' => $categoryId,
-        'patient_pid' => $pid,
-    ]) . "\n"
+$result = store_document_impl(
+    pid: $pid,
+    category: $category,
+    filename: $filename,
+    mime: $mime,
+    bytes: $bytes,
 );
+
+if (!$result->ok) {
+    // CLI mode: exit 2 on any failure with the kebab/snake code in
+    // stderr so the docker-exec caller can grep it out.
+    _bail($result->code, $result->message);
+}
+
+fwrite(STDOUT, json_encode($result->result) . "\n");
 exit(0);
