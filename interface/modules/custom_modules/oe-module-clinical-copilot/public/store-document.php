@@ -78,7 +78,7 @@ $ignoreAuth = true;
 // load; default to "default" if missing so the bootstrap resolves.
 $_GET['site'] = $_GET['site'] ?? 'default';
 
-require_once __DIR__ . '/../../../../../globals.php';
+require_once __DIR__ . '/../../../../globals.php';
 require_once __DIR__ . '/../src/Internal/_store_document_impl.php';
 
 /**
