@@ -92,6 +92,18 @@ services:
       OPENEMR_SETTING_SMTP_Auth: 'TRUE'
       OPENEMR_SETTING_practice_return_email_path: 'noreply@openemr.local'
       OPENEMR_SETTING_Patient_Reminder_Sender_Name: 'OpenEMR Reminders'
+      # Shared secret consumed by interface/clinical_copilot/store-document.php
+      # to authenticate the Clinical Co-Pilot sidecar's HTTP push of chat-side
+      # PDF uploads into OpenEMR's documents store. Read by the endpoint via
+      # getenv('COPILOT_STORE_DOCUMENT_SECRET'); the matching value must be
+      # set in clinical-copilot/.env as COPILOT_OPENEMR_DOC_PUSH_SECRET.
+      #
+      # The ":?" suffix is intentional: docker compose REFUSES to start with
+      # a useful error if COPILOT_STORE_DOCUMENT_SECRET is not set in the
+      # shell or in docker/development-easy/.env. This prevents the sidecar
+      # → OpenEMR push from silently failing because the endpoint refuses
+      # to authenticate (see store-document.php's "secret_not_configured").
+      COPILOT_STORE_DOCUMENT_SECRET: ${COPILOT_STORE_DOCUMENT_SECRET:?Set COPILOT_STORE_DOCUMENT_SECRET in docker/development-easy/.env or your shell. Generate one with: python3 -c "import secrets; print(secrets.token_urlsafe(48))". The same value must be set as COPILOT_OPENEMR_DOC_PUSH_SECRET in clinical-copilot/.env.}
     depends_on:
       mysql:
         condition: service_healthy
