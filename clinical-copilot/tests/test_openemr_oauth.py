@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from sidecar.openemr_oauth import (
     OpenEMRConfigurationError,
     OpenEMRTokenCache,
+    _diagnose_key_path,
 )
 
 
@@ -176,3 +177,90 @@ def test_assertion_rejected_by_wrong_public_key(tmp_path: Path) -> None:
             algorithms=["RS384"],
             audience="https://emr/token",
         )
+
+
+# ─── Diagnostic regression tests for the 2026-05-08 Hetzner outage ────────
+# When the cron deploy ran as root on Hetzner, the .keys directory got
+# chown'd to uid 1000:lxd, the sidecar (uid 10001) could not stat() its
+# private key, and Path.exists() raised an uncaught PermissionError.
+# The outage lasted 3+ days because the error message that reached the
+# logs was useless. These tests pin down the post-fix behaviour:
+# every permission-related failure must produce an OpenEMRConfigurationError
+# whose message names the offending uid AND tells the operator how to
+# fix it.
+
+
+def test_diagnose_key_path_contains_uid_and_chown_hint(tmp_path: Path) -> None:
+    """_diagnose_key_path must surface the sidecar uid and a chown command.
+
+    Why: the operator's first instinct on an HTTP 500 is to grep the
+    logs for the literal word 'chown'. If they don't see it, they
+    won't know that ownership is the answer. Pinning the literal
+    'chown' substring to the diagnostic block keeps that guarantee
+    even if a refactor reshapes the message.
+    """
+    key_path, _ = _make_key_file(tmp_path)
+    diagnostic = _diagnose_key_path(key_path)
+    import os
+
+    proc_uid = os.geteuid()
+    assert f"uid={proc_uid}" in diagnostic
+    assert "chown" in diagnostic
+    assert str(key_path) in diagnostic
+    assert str(key_path.parent) in diagnostic
+
+
+def test_token_cache_surfaces_permission_error_on_stat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PermissionError from Path.exists() must surface as a clear
+    OpenEMRConfigurationError naming the path AND the sidecar uid AND
+    a chown command — not as an unhandled PermissionError that bubbles
+    to HTTP 500 with no actionable signal.
+    """
+    key_path, _ = _make_key_file(tmp_path)
+
+    real_exists = Path.exists
+
+    def _exists_denies(self: Path) -> bool:
+        if self == key_path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", _exists_denies)
+    with pytest.raises(OpenEMRConfigurationError) as exc_info:
+        OpenEMRTokenCache(_FakeSettings(private_key_path=str(key_path)))
+    msg = str(exc_info.value)
+    assert "PermissionError" in msg
+    assert str(key_path) in msg
+    assert "chown" in msg, (
+        "Diagnostic must include a chown hint so the operator's first "
+        "log-grep finds the fix command."
+    )
+
+
+def test_token_cache_surfaces_permission_error_on_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If exists() succeeds but read_bytes() then fails (e.g. file mode
+    0000 with a readable parent dir), the same diagnostic block must
+    fire.
+    """
+    key_path, _ = _make_key_file(tmp_path)
+
+    real_read_bytes = Path.read_bytes
+
+    def _read_denies(self: Path) -> bytes:
+        if self == key_path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _read_denies)
+    with pytest.raises(OpenEMRConfigurationError) as exc_info:
+        OpenEMRTokenCache(_FakeSettings(private_key_path=str(key_path)))
+    msg = str(exc_info.value)
+    assert "could not read" in msg
+    assert str(key_path) in msg
+    assert "chown" in msg

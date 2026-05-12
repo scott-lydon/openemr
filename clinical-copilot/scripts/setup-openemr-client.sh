@@ -436,6 +436,57 @@ echo "Ensuring RSA keypair at $PRIVATE_KEY_PATH …"
   --jwks-out "$JWKS_PATH" \
   --kid 'clinical-copilot-sidecar'
 
+# ─── 3.5 Lock down key ownership so the SIDECAR container can read it ─────
+# The sidecar Dockerfile creates and runs as user 'copilot' (uid 10001,
+# gid 10001). The .keys directory is bind-mounted read-only into the
+# container; the host kernel enforces the HOST uid/gid for any read,
+# regardless of the container's namespace (unless userns-remap is on,
+# which it isn't on our Hetzner host). If we leave ownership at whoever
+# happened to run this script — root on Hetzner during cron deploys,
+# uid 1000 in CI, the local mac user during dev — the container's
+# copilot user can't read its own private key, every JWT-bearer
+# assertion throws PermissionError, and every AI-backed call returns
+# HTTP 500 with no usable error in the logs.
+#
+# This was the 2026-05-08 → 2026-05-11 Hetzner outage: the cron deploy
+# ran as root, chown'd the keys to uid 1000:lxd, and the sidecar
+# silently 500'd for 3 days before anyone correlated it with the
+# deploy timestamp.
+#
+# When this script runs as root (Hetzner deploy path), explicitly
+# chown to the sidecar uid. When run by a regular user (dev macs),
+# verify the user can still read the key after generation and surface
+# a loud error if not. Overridable for environments that use a
+# different uid for the sidecar (e.g. user-namespaced docker).
+SIDECAR_UID="${COPILOT_SIDECAR_UID:-10001}"
+SIDECAR_GID="${COPILOT_SIDECAR_GID:-10001}"
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Running as root; locking key ownership to sidecar uid=$SIDECAR_UID gid=$SIDECAR_GID."
+  chown -R "$SIDECAR_UID:$SIDECAR_GID" "$KEYS_DIR" || {
+    echo "ERROR: chown $KEYS_DIR to $SIDECAR_UID:$SIDECAR_GID failed." >&2
+    echo "       The sidecar container will not be able to read its" >&2
+    echo "       private key. Fix the directory ownership manually:" >&2
+    echo "         chown -R $SIDECAR_UID:$SIDECAR_GID $KEYS_DIR" >&2
+    exit 3
+  }
+  chmod 0500 "$KEYS_DIR"
+  chmod 0400 "$PRIVATE_KEY_PATH" "$JWKS_PATH"
+else
+  # Non-root caller (dev workflow). The container's copilot uid likely
+  # cannot read these unless the dev's uid happens to be 10001, which
+  # it isn't on macOS. For local dev compose stacks the keys directory
+  # is usually mounted differently, so we just verify the CURRENT user
+  # can read them and surface a clear error otherwise.
+  if ! [ -r "$PRIVATE_KEY_PATH" ]; then
+    echo "ERROR: $PRIVATE_KEY_PATH was generated but uid=$(id -u) gid=$(id -g)" >&2
+    echo "       cannot read it. The sidecar will fail with PermissionError" >&2
+    echo "       on the first FHIR call. Fix with:" >&2
+    echo "         chown -R \$(id -u):\$(id -g) $KEYS_DIR" >&2
+    echo "         chmod 0500 $KEYS_DIR && chmod 0400 $PRIVATE_KEY_PATH $JWKS_PATH" >&2
+    exit 4
+  fi
+fi
+
 # ─── 4. Skip provisioning when existing creds still work ──────────────────
 EXISTING_ID="$(read_env_var COPILOT_OPENEMR_CLIENT_ID)"
 EXISTING_KEY_PATH="$(read_env_var COPILOT_OPENEMR_PRIVATE_KEY_PATH)"
