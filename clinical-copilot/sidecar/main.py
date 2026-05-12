@@ -31,6 +31,8 @@ from sidecar.api.citations import (
     get_pdf_source_for_citation,
     router as citations_router,
 )
+from sidecar.api.billing import router as billing_router
+from sidecar.api.smart_launch import router as smart_launch_router
 from sidecar.api.documents import (
     get_fhir_client,
     get_queue_connection,
@@ -321,6 +323,9 @@ def create_app() -> FastAPI:
     app.include_router(chat_w2_router)
     app.include_router(documents_router)
     app.include_router(citations_router)
+    app.include_router(billing_router)
+    if os.environ.get("COPILOT_SMART_LAUNCH", "").lower() == "true":
+        app.include_router(smart_launch_router)
     _wire_ingest_dependencies(app, settings)
     _wire_citations_dependencies(app, settings)
     app.state.settings = settings

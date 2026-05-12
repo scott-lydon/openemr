@@ -1,0 +1,23 @@
+{
+    "_comment": "SMART (Substitutable Medical Apps and Reusable Technology) on FHIR app manifest. Served at /.well-known/smart-app-launch.json so the SMART Health IT app gallery and any other FHIR-compliant EHR (Cerner, Epic, Meditech) can discover this app. Customers configure their EHR to invoke the launch_uri below; their EHR will pass an iss + launch parameter and we complete the authorization code flow.",
+    "client_name": "Clinical Co-Pilot",
+    "client_uri": "https://copilot.scott-lydon.dev",
+    "logo_uri": "https://copilot.scott-lydon.dev/logo.png",
+    "tos_uri": "https://copilot.scott-lydon.dev/terms",
+    "policy_uri": "https://copilot.scott-lydon.dev/privacy",
+    "launch_uri": "https://api.copilot.scott-lydon.dev/smart/launch",
+    "redirect_uris": [
+        "https://api.copilot.scott-lydon.dev/smart/callback"
+    ],
+    "scope": "launch openid fhirUser patient/Condition.read patient/MedicationRequest.read patient/AllergyIntolerance.read patient/Observation.read patient/Encounter.read patient/Procedure.read patient/DocumentReference.read",
+    "token_endpoint_auth_method": "private_key_jwt",
+    "grant_types": [
+        "authorization_code"
+    ],
+    "response_types": [
+        "code"
+    ],
+    "contacts": [
+        "relays.inanity.0n@icloud.com"
+    ]
+}

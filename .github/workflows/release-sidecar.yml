@@ -1,0 +1,124 @@
+name: Release Sidecar Images
+
+# Builds and pushes the Clinical Co-Pilot sidecar and BFF (Backend-for-
+# Frontend) container images on every git tag matching v*.
+#
+# Image names:
+#   ghcr.io/scott-lydon/clinical-copilot-sidecar:<version>
+#   ghcr.io/scott-lydon/clinical-copilot-bff:<version>
+#
+# Both images are also tagged `latest` for the convenience of the
+# self-host docker-compose file.
+#
+# The COPILOT_GIT_HASH build-arg is baked into the image so /diagnostic
+# reports the exact commit without needing a .git directory inside the
+# runtime container.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Override version tag (defaults to git tag)"
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: sidecar
+            image: clinical-copilot-sidecar
+            dockerfile: clinical-copilot/Dockerfile
+            context: clinical-copilot
+          - name: bff
+            image: clinical-copilot-bff
+            dockerfile: clinical-copilot/bff/Dockerfile
+            context: clinical-copilot
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.version }}" ]]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ -z "${version}" ]]; then
+            echo "::error::Could not determine version; neither inputs.version nor GITHUB_REF_NAME is set."
+            exit 1
+          fi
+          short_sha="$(git rev-parse --short HEAD)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (${{ matrix.target.name }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.target.context }}
+          file: ${{ matrix.target.dockerfile }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          provenance: true
+          sbom: true
+          tags: |
+            ghcr.io/scott-lydon/${{ matrix.target.image }}:${{ steps.version.outputs.version }}
+            ghcr.io/scott-lydon/${{ matrix.target.image }}:latest
+          build-args: |
+            COPILOT_GIT_HASH=${{ steps.version.outputs.short_sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/scott-lydon/openemr
+            org.opencontainers.image.revision=${{ steps.version.outputs.short_sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.licenses=GPL-3.0-or-later
+
+      - name: Verify image runs and /diagnostic responds (${{ matrix.target.name }})
+        if: matrix.target.name == 'sidecar'
+        run: |
+          set -euo pipefail
+          docker pull "ghcr.io/scott-lydon/${{ matrix.target.image }}:${{ steps.version.outputs.version }}"
+          docker run --rm -d \
+            --name copilot-smoke \
+            -e COPILOT_LLM_PROVIDER=mock \
+            -e COPILOT_ALLOW_MOCK=true \
+            -p 18801:8801 \
+            "ghcr.io/scott-lydon/${{ matrix.target.image }}:${{ steps.version.outputs.version }}"
+          # Allow up to 30s for the FastAPI startup probe.
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:18801/diagnostic >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:18801/diagnostic | tee /tmp/diag.json
+          test "$(jq -r .checks.auth_method /tmp/diag.json)" = "private_key_jwt"
+          test "$(jq -r .checks.purpose_check_class /tmp/diag.json)" = "membership_in_authorized_purposes"
+          test "$(jq -r .version.git_hash /tmp/diag.json)" = "${{ steps.version.outputs.short_sha }}"
+          docker rm -f copilot-smoke || true

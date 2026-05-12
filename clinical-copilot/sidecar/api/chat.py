@@ -37,6 +37,7 @@ from sidecar.agent.follow_up import FollowUpConfig, run_follow_up
 from sidecar.agent.graph import GraphConfig, run_graph
 from sidecar.audit import InMemoryAuditLog
 from sidecar.auth import TaskTokenClaims, require_task_token
+from sidecar.licensing import license_check
 from sidecar.config import get_settings
 from sidecar.openemr_oauth import (
     OpenEMRConfigurationError,
@@ -259,7 +260,11 @@ def _presenting_for_message(message: str | None) -> Presenting | None:
     )
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post(
+    "/chat",
+    response_model=ChatResponse,
+    dependencies=[Depends(license_check)],
+)
 async def chat(
     body: ChatRequest,
     claims: TaskTokenClaims = Depends(require_task_token),
@@ -648,9 +653,30 @@ def diagnostic() -> dict[str, object]:
         "checks": {
             "auth_method": auth_method,
             "task_token_purpose_check": purpose_check,
+            # Mirror the same value under the canonical key the
+            # release-sidecar.yml smoke test and the OpenEMR module
+            # admin "Test Connectivity" button look for. Renaming the
+            # legacy field would break the existing setup script that
+            # already greps for ``task_token_purpose_check``.
+            "purpose_check_class": purpose_check,
             "private_key_file": key_status,
+            "license_state": _resolve_license_state_for_diagnostic(),
         },
     }
+
+
+def _resolve_license_state_for_diagnostic() -> str:
+    """Diagnostic-side license probe.
+
+    Wrapped here so an ImportError or database failure cannot 500
+    the diagnostic endpoint. The /chat endpoint enforces the real
+    gate via ``sidecar.licensing.license_check``.
+    """
+    try:
+        from sidecar.licensing import resolve_license_state
+        return resolve_license_state()
+    except Exception as exc:  # pragma: no cover — defensive
+        return f"probe_failed: {type(exc).__name__}"
 
 
 @router.get("/", response_class=HTMLResponse)

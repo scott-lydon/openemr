@@ -53,6 +53,7 @@ from sidecar.agents.w2.synthesizer import (
     synthesize,
 )
 from sidecar.auth import TaskTokenClaims, require_task_token
+from sidecar.licensing import license_check
 from sidecar.config import get_settings
 from sidecar.rag.types import EvidenceSnippet, RetrievalMethod
 
@@ -101,7 +102,11 @@ class W2ChatResponse(BaseModel):
     citation_links: dict[str, str] = {}
 
 
-@router.post("/agent-api/v1/w2-chat", response_model=W2ChatResponse)
+@router.post(
+    "/agent-api/v1/w2-chat",
+    response_model=W2ChatResponse,
+    dependencies=[Depends(license_check)],
+)
 async def post_w2_chat(
     body: W2ChatRequest,
     claims: Annotated[TaskTokenClaims, Depends(require_task_token)],

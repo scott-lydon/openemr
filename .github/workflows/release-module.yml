@@ -1,0 +1,105 @@
+name: Release Clinical Co-Pilot Module
+
+# On every git tag matching v*, package the OpenEMR module directory as
+# a zip and attach it to a GitHub Release. Clinics download this zip
+# from the Releases page, unzip into their OpenEMR's
+# interface/modules/custom_modules/, and click Register/Install/Enable.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Override version tag (defaults to git tag)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  package-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.version }}" ]]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ -z "${version}" ]]; then
+            echo "::error::Could not determine version."
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify module directory is clean
+        run: |
+          set -euo pipefail
+          # Refuse to release if the module is missing the canonical
+          # composer.json or openemr.bootstrap.php — those are the two
+          # files the OpenEMR Module Manager inspects to register the
+          # module. Catching this in CI prevents a broken zip from
+          # ever reaching the Releases page.
+          test -f interface/modules/custom_modules/oe-module-clinical-copilot/composer.json
+          test -f interface/modules/custom_modules/oe-module-clinical-copilot/openemr.bootstrap.php
+
+      - name: Package module zip
+        id: package
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          out="oe-module-clinical-copilot-${version}.zip"
+          # Zip from the openemr root so the archive contains the
+          # canonical "oe-module-clinical-copilot/" top-level directory
+          # the unzip target expects.
+          cd interface/modules/custom_modules
+          zip -r "../../../${out}" oe-module-clinical-copilot \
+            -x "*.DS_Store" \
+            -x "*/__pycache__/*" \
+            -x "*/node_modules/*" \
+            -x "*.log"
+          cd ../../..
+          ls -la "${out}"
+          sha256sum "${out}" > "${out}.sha256"
+          echo "out=${out}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Clinical Co-Pilot v${{ steps.version.outputs.version }}"
+          tag_name: ${{ github.ref_name }}
+          body: |
+            ## Install
+
+            1. Download `${{ steps.package.outputs.out }}` below.
+            2. Unzip into your OpenEMR install's
+               `interface/modules/custom_modules/`.
+            3. Open `Admin → Modules → Manage Modules → Unregistered Tab`,
+               find **Clinical Co-Pilot**, click `Register`, then on the
+               Registered Tab click `Install` and `Enable`.
+            4. Open the module's `Settings` (gear icon) and set:
+               - **Sidecar URL** (the URL of your Co-Pilot sidecar)
+               - **License Key** (from your Stripe Checkout confirmation)
+               - Click **Generate New Key** next to JWT Signing Key, then
+                 mirror that value into your sidecar's
+                 `COPILOT_BFF_JWT_SIGNING_KEY` env var.
+            5. Click `Test Connectivity`. You should see "Sidecar reachable. Version: ..."
+
+            See [INSTALL.md](https://github.com/scott-lydon/openemr/blob/master/interface/modules/custom_modules/oe-module-clinical-copilot/INSTALL.md) for full instructions.
+
+            ## Verify download
+
+            ```
+            sha256sum -c ${{ steps.package.outputs.out }}.sha256
+            ```
+          files: |
+            ${{ steps.package.outputs.out }}
+            ${{ steps.package.outputs.out }}.sha256

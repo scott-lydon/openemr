@@ -1,0 +1,110 @@
+# docker-compose.openemr-sidecar.yml
+#
+# Drop-in self-host stack for the Clinical Co-Pilot sidecar plus its
+# Postgres state. Designed to be brought up alongside an existing
+# OpenEMR docker-compose so the sidecar can join the OpenEMR network.
+#
+# Quick start (self-host):
+#
+#     # 1. Generate the JWT signing key and persist into .env
+#     openssl rand -hex 32 | xargs -I {} echo "COPILOT_BFF_JWT_SIGNING_KEY={}" >> .env
+#
+#     # 2. (Optional) Set your LLM provider key.
+#     echo "COPILOT_LLM_PROVIDER=openai" >> .env
+#     echo "OPENAI_API_KEY=sk-..." >> .env
+#
+#     # 3. Set your license key (from Stripe Checkout confirmation page).
+#     echo "COPILOT_LICENSE_KEY=cc_live_..." >> .env
+#
+#     # 4. Boot the stack on the same docker network as OpenEMR.
+#     docker compose -f docker-compose.openemr-sidecar.yml up -d
+#
+# The sidecar and BFF images are pulled from GitHub Container Registry
+# and are GPL-3.0-licensed alongside this repo, so an air-gapped clinic
+# can re-build them from source.
+
+version: "3.9"
+
+x-restart-policy: &restart unless-stopped
+
+services:
+  copilot-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: copilot-postgres
+    restart: *restart
+    environment:
+      POSTGRES_USER: copilot
+      POSTGRES_PASSWORD: copilot
+      POSTGRES_DB: copilot
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "copilot", "-d", "copilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - copilot-pgdata:/var/lib/postgresql/data
+    networks:
+      - copilot
+
+  copilot-sidecar:
+    image: ghcr.io/scott-lydon/clinical-copilot-sidecar:latest
+    container_name: copilot-sidecar
+    restart: *restart
+    depends_on:
+      copilot-postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      COPILOT_DATABASE_URL: postgresql+psycopg://copilot:copilot@copilot-postgres:5432/copilot
+      COPILOT_LISTEN_HOST: 0.0.0.0
+      COPILOT_LISTEN_PORT: "8801"
+    ports:
+      - "8801:8801"
+    networks:
+      - copilot
+      # Attach to the OpenEMR docker network so the sidecar can reach
+      # OpenEMR's FHIR endpoint at http://openemr/apis/default/fhir.
+      # Edit `openemr_default` to match your OpenEMR compose project's
+      # network name (run `docker network ls` to discover it).
+      - openemr_default
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8801/diagnostic"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    volumes:
+      # The SMART Backend Services keypair (private_key_jwt assertion).
+      # Generate with `clinical-copilot/scripts/setup-openemr-client.sh`.
+      - ./.keys:/app/.keys:ro
+
+  copilot-bff:
+    image: ghcr.io/scott-lydon/clinical-copilot-bff:latest
+    container_name: copilot-bff
+    restart: *restart
+    depends_on:
+      copilot-sidecar:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      COPILOT_SIDECAR_URL: http://copilot-sidecar:8801
+    command: ["uvicorn", "bff.main:app", "--host", "0.0.0.0", "--port", "8800"]
+    ports:
+      - "8800:8800"
+    networks:
+      - copilot
+      - openemr_default
+
+volumes:
+  copilot-pgdata: {}
+
+networks:
+  copilot:
+    driver: bridge
+  # Mark openemr_default as external so this compose file does NOT try
+  # to create it; it must already exist (created by the OpenEMR compose
+  # stack). If your OpenEMR network has a different name, change it
+  # here AND in each service block above.
+  openemr_default:
+    external: true

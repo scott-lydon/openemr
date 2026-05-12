@@ -104,20 +104,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     break;
                 }
                 $decoded = json_decode((string) $body, associative: true);
-                if (!is_array($decoded) || !isset($decoded['running_git_hash'])) {
+                $gitHash    = (string) (($decoded['version']['git_hash']           ?? null) ?? '');
+                $authMethod = (string) (($decoded['checks']['auth_method']         ?? null) ?? '');
+                $purposeCls = (string) (($decoded['checks']['purpose_check_class'] ?? null) ?? '');
+                $licenseState = (string) (($decoded['checks']['license_state']     ?? null) ?? '');
+                if (!is_array($decoded) || $gitHash === '') {
                     $flash[] = [
                         'level' => 'danger',
-                        'text' => xl('Sidecar returned a 200 but the response is not a valid /diagnostic payload (missing running_git_hash). Verify the sidecar is running this module\'s expected version.'),
+                        'text' => xl('Sidecar returned a 200 but the response is not a valid /diagnostic payload (missing version.git_hash). Verify the sidecar is running this module\'s expected version.'),
                     ];
                     break;
                 }
                 $flash[] = [
                     'level' => 'success',
                     'text' => sprintf(
-                        xl('Sidecar reachable. Version: %s. Auth method: %s. Purpose-check class: %s.'),
-                        (string) ($decoded['running_git_hash'] ?? '?'),
-                        (string) ($decoded['auth_method'] ?? '?'),
-                        (string) ($decoded['purpose_check_class'] ?? '?')
+                        xl('Sidecar reachable. Version: %s. Auth method: %s. Purpose-check class: %s. License state: %s.'),
+                        $gitHash,
+                        $authMethod,
+                        $purposeCls,
+                        $licenseState
                     ),
                 ];
                 break;

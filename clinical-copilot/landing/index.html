@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Clinical Co-Pilot for OpenEMR</title>
+    <meta name="description" content="Pairwise AI diagnostic cross-check and chart-error scan for OpenEMR. HIPAA-aligned, audit-logged, citation-required. Start a 14-day free trial.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+    <style>
+        :root {
+            --bg: #0a0e1a;
+            --panel: #1a2236;
+            --panel-border: #2a3450;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --text: #e2e8f0;
+            --muted: #94a3b8;
+            --success: #34d399;
+            --danger: #f87171;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; line-height: 1.6; }
+        a { color: var(--accent-hover); text-decoration: none; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+        nav { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; border-bottom: 1px solid var(--panel-border); }
+        nav .brand { font-weight: 700; font-size: 1.1rem; }
+        nav a { color: var(--muted); margin-left: 20px; }
+        nav a:hover { color: var(--text); }
+        .hero { padding: 64px 0 32px; text-align: center; }
+        .hero h1 { font-size: 2.8rem; font-weight: 700; letter-spacing: -0.02em; max-width: 800px; margin: 0 auto 16px; }
+        .hero p.tagline { font-size: 1.2rem; color: var(--muted); max-width: 720px; margin: 0 auto 32px; }
+        .cta { display: inline-block; background: var(--accent); color: white; padding: 14px 28px; border-radius: 8px; font-weight: 600; font-size: 1rem; }
+        .cta:hover { background: var(--accent-hover); color: white; }
+        .cta.secondary { background: transparent; border: 1px solid var(--panel-border); margin-left: 12px; }
+        .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px; padding: 24px; }
+        .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+        .pricing { padding: 48px 0; }
+        .pricing h2 { text-align: center; margin-bottom: 32px; font-size: 1.8rem; }
+        .pricing .price-card { display: flex; flex-direction: column; }
+        .pricing .price-card.featured { border-color: var(--accent); position: relative; }
+        .pricing .featured-tag { position: absolute; top: -12px; right: 16px; background: var(--accent); color: white; padding: 4px 12px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+        .pricing .name { font-size: 1.2rem; font-weight: 600; }
+        .pricing .price { font-size: 2.2rem; font-weight: 700; margin: 12px 0 4px; }
+        .pricing .period { color: var(--muted); font-size: 0.9rem; }
+        .pricing ul { list-style: none; margin: 20px 0; flex: 1; }
+        .pricing li { padding: 8px 0; color: var(--muted); }
+        .pricing li::before { content: "✓"; color: var(--success); margin-right: 8px; }
+        .pricing .cta { text-align: center; margin-top: auto; }
+        .features { padding: 48px 0; }
+        .features h2 { text-align: center; margin-bottom: 32px; font-size: 1.8rem; }
+        .features .feature { padding: 24px; }
+        .features .feature h3 { font-size: 1.1rem; margin-bottom: 8px; }
+        .features .feature p { color: var(--muted); font-size: 0.95rem; }
+        footer { padding: 32px 0; border-top: 1px solid var(--panel-border); color: var(--muted); font-size: 0.9rem; }
+        footer .footer-grid { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+        footer a { color: var(--muted); display: block; padding: 4px 0; }
+        footer a:hover { color: var(--text); }
+        .trust-strip { padding: 24px 0; border-top: 1px solid var(--panel-border); border-bottom: 1px solid var(--panel-border); text-align: center; color: var(--muted); font-size: 0.9rem; }
+        .demo-video { padding: 48px 0; text-align: center; }
+        .demo-video iframe { max-width: 100%; border: 1px solid var(--panel-border); border-radius: 12px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <nav>
+        <div class="brand">Clinical Co-Pilot</div>
+        <div>
+            <a href="#pricing">Pricing</a>
+            <a href="#trust">Trust</a>
+            <a href="https://github.com/scott-lydon/openemr">GitHub</a>
+            <a href="https://docs.copilot.scott-lydon.dev">Docs</a>
+        </div>
+    </nav>
+
+    <section class="hero">
+        <h1>Diagnostic cross-check and chart-error scan for every patient visit.</h1>
+        <p class="tagline">A drop-in OpenEMR module. Pairwise AI comparison engine. Citations required for every answer. No PHI leaves your BAA chain.</p>
+        <a class="cta" href="#pricing">Start 14-day free trial</a>
+        <a class="cta secondary" href="#trust">See trust documents</a>
+    </section>
+
+    <div class="trust-strip">
+        HIPAA-aligned · OpenAI Enterprise BAA + ZDR · Hash-chained audit log, 7-year retention · Read-only against FHIR
+    </div>
+
+    <section class="demo-video">
+        <h2 style="margin-bottom: 16px;">60-second demo</h2>
+        <p style="color: var(--muted); margin-bottom: 24px;">Pairwise diagnosis ranking on a real chart with citations back to the patient's Conditions and Observations.</p>
+        <iframe width="640" height="360" src="about:blank" title="Clinical Co-Pilot demo" allow="picture-in-picture" allowfullscreen></iframe>
+        <p style="color: var(--muted); margin-top: 12px; font-size: 0.85rem;">Replace the <code>src</code> above with your demo URL (Loom / YouTube unlisted) before publishing.</p>
+    </section>
+
+    <section class="features">
+        <h2>Why clinics adopt this</h2>
+        <div class="grid-3">
+            <div class="panel feature">
+                <h3>Pairwise ranking, not list-vomit</h3>
+                <p>Each candidate diagnosis is judged against every other one. No silent biases from list-order, no hallucinated symptoms — every claim cites a FHIR resource in the patient's chart.</p>
+            </div>
+            <div class="panel feature">
+                <h3>Read-only against FHIR</h3>
+                <p>The sidecar pulls Conditions, MedicationRequests, AllergyIntolerances, Observations, Encounters, Procedures, and DocumentReferences. It never writes back. The OpenEMR record is unmodified.</p>
+            </div>
+            <div class="panel feature">
+                <h3>Hash-chained audit log</h3>
+                <p>Every clinician question and every AI answer is appended to a hash-chained audit log with 7-year retention. The chain head is offsite-anchored to AWS S3 Object Lock daily.</p>
+            </div>
+            <div class="panel feature">
+                <h3>BAA chain</h3>
+                <p>OpenAI Enterprise BAA with Zero-Data-Retention. Our own BAA with you. No PHI crosses to Cohere Rerank (re-ranking runs on de-identified candidates only).</p>
+            </div>
+            <div class="panel feature">
+                <h3>Five-minute install</h3>
+                <p>One zip, three clicks in Module Manager, paste the license key and the sidecar URL. <a href="https://github.com/scott-lydon/openemr/blob/master/interface/modules/custom_modules/oe-module-clinical-copilot/INSTALL.md">INSTALL.md</a>.</p>
+            </div>
+            <div class="panel feature">
+                <h3>Open-source PHP module</h3>
+                <p>The OpenEMR-side glue is GPL-3.0 on GitHub. The diagnostic engine is licensed; you can self-host or use our hosted sidecar.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="pricing" id="pricing">
+        <h2>Pricing</h2>
+        <p style="text-align: center; color: var(--muted); margin-bottom: 32px;">14-day free trial. No credit card required to start. Cancel any time from your Stripe portal.</p>
+        <div class="grid-3">
+            <div class="panel price-card">
+                <div class="name">Starter</div>
+                <div class="price">$99</div>
+                <div class="period">per clinician / month</div>
+                <ul>
+                    <li>Diagnostic cross-check</li>
+                    <li>Follow-up questions</li>
+                    <li>Citations required</li>
+                    <li>Hash-chained audit log</li>
+                    <li>Email support</li>
+                </ul>
+                <a class="cta" href="https://checkout.stripe.com/c/pay/cs_starter">Start trial</a>
+            </div>
+            <div class="panel price-card featured">
+                <div class="featured-tag">Most popular</div>
+                <div class="name">Pro</div>
+                <div class="price">$249</div>
+                <div class="period">per clinician / month</div>
+                <ul>
+                    <li>Everything in Starter</li>
+                    <li>Chart-error scan</li>
+                    <li>Document ingest (PDF → FHIR)</li>
+                    <li>SOC 2 trust report access</li>
+                    <li>Priority email support</li>
+                </ul>
+                <a class="cta" href="https://checkout.stripe.com/c/pay/cs_pro">Start trial</a>
+            </div>
+            <div class="panel price-card">
+                <div class="name">Enterprise</div>
+                <div class="price">Contact</div>
+                <div class="period">volume + on-prem</div>
+                <ul>
+                    <li>Everything in Pro</li>
+                    <li>SAML / OIDC SSO</li>
+                    <li>Self-hosted sidecar</li>
+                    <li>Customer-named BAA</li>
+                    <li>Dedicated Slack channel</li>
+                </ul>
+                <a class="cta" href="mailto:relays.inanity.0n@icloud.com?subject=Clinical%20Co-Pilot%20Enterprise">Talk to us</a>
+            </div>
+        </div>
+    </section>
+
+    <section id="trust" class="features">
+        <h2>Trust</h2>
+        <div class="grid-3">
+            <div class="panel feature">
+                <h3>BAA template</h3>
+                <p>Our standard customer-facing Business Associate Agreement, redlined by healthcare counsel. <a href="/BAA_TEMPLATE.md">View</a>.</p>
+            </div>
+            <div class="panel feature">
+                <h3>Security posture</h3>
+                <p>Threat model, architecture diagram, BAA chain (us → OpenAI Enterprise + ZDR, us → Azure for hosting), pen-test cadence. <a href="/trust">View</a>.</p>
+            </div>
+            <div class="panel feature">
+                <h3>Audit log retention</h3>
+                <p>7-year hash-chained log. Chain head offsite-anchored to AWS S3 Object Lock daily. <a href="https://docs.copilot.scott-lydon.dev/audit">Operator docs</a>.</p>
+            </div>
+        </div>
+    </section>
+</div>
+
+<footer>
+    <div class="container">
+        <div class="footer-grid">
+            <div>
+                <strong>Clinical Co-Pilot</strong>
+                <div style="color: var(--muted); margin-top: 4px;">© 2026 Scott Lydon</div>
+            </div>
+            <div>
+                <a href="/trust">Trust</a>
+                <a href="/BAA_TEMPLATE.md">BAA template</a>
+                <a href="/privacy">Privacy</a>
+                <a href="/terms">Terms</a>
+            </div>
+            <div>
+                <a href="https://github.com/scott-lydon/openemr">GitHub</a>
+                <a href="https://github.com/scott-lydon/openemr/releases">Releases</a>
+                <a href="https://docs.copilot.scott-lydon.dev">Docs</a>
+                <a href="mailto:relays.inanity.0n@icloud.com">Email</a>
+            </div>
+        </div>
+    </div>
+</footer>
+</body>
+</html>
