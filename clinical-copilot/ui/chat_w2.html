@@ -403,6 +403,37 @@ if (TASK_TOKEN) {
  *
  * Returns nothing; the page is unloading.
  */
+/**
+ * Resolve the OpenEMR origin (scheme + host + port) for top-level
+ * navigation back to refresh-token.php. The Co-Pilot ships on its own
+ * port and may be served from a different hostname than OpenEMR (e.g.
+ * a reverse-proxy subdomain in production vs `localhost:9300` in dev),
+ * so a hard-coded URL was always wrong.
+ *
+ * Resolution order:
+ *   1. `document.referrer` — set whenever the Co-Pilot is opened from
+ *      the OpenEMR chart via target="_blank". This is the same origin
+ *      the user's session cookie is scoped to, so it Just Works.
+ *   2. <meta name="openemr-origin" content="https://openemr.example/">
+ *      — host page override for environments that drop Referer.
+ *   3. Throw. Falling back to window.location.origin would silently
+ *      retry against the sidecar (which is not OpenEMR) and make the
+ *      failure mode invisible. Surfacing the error names the cause.
+ */
+function resolveOpenEmrOrigin() {
+  if (document.referrer) {
+    try { return new URL(document.referrer).origin; }
+    catch (err) { /* fall through to meta / throw */ }
+  }
+  const meta = document.querySelector('meta[name="openemr-origin"]');
+  if (meta && meta.content) return meta.content.trim();
+  throw new Error(
+    '[copilot] cannot determine OpenEMR origin for refresh-token.php: ' +
+    'document.referrer is empty and no <meta name="openemr-origin" content="..."> is present. ' +
+    'Open the Co-Pilot from the OpenEMR chart, or have the host page emit the meta tag.'
+  );
+}
+
 function navigateToRefreshTokenEndpoint(reason) {
   const fhirUuid = (PATIENT_ID || '').replace(/^Patient\//, '');
   if (!fhirUuid) {
@@ -417,7 +448,7 @@ function navigateToRefreshTokenEndpoint(reason) {
   // hard-code it here because the chat tab has no other way to know
   // what host OpenEMR is on. Ops would parameterize via a meta tag or
   // a sidecar-served bootstrap config in production.
-  const refreshUrl = new URL('https://localhost:9300/interface/modules/custom_modules/oe-module-clinical-copilot/public/refresh-token.php');
+  const refreshUrl = new URL('/interface/modules/custom_modules/oe-module-clinical-copilot/public/refresh-token.php', resolveOpenEmrOrigin());
   refreshUrl.searchParams.set('patient_uuid', fhirUuid);
   // Round-trip back to whatever path the chat is currently on (so
   // /w2/ stays /w2/, and /  stays /). The fragment is dropped on the

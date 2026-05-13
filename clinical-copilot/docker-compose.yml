@@ -72,6 +72,22 @@ services:
         condition: service_healthy
     extra_hosts:
       - "localhost:host-gateway"
+    # Override the Dockerfile HEALTHCHECK, which targets the sidecar
+    # port 8801. The bff listens on 8800; without this override docker
+    # reports copilot-bff as unhealthy forever even though /health
+    # returns 200. Use python -c rather than curl because the image
+    # does not ship curl.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8800/health', timeout=2)"
+          || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
 volumes:
