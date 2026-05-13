@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Trust and security — Clinical Co-Pilot for OpenEMR</title>
+    <meta name="description" content="HIPAA stance, BAA chain, encryption posture, audit log architecture, and incident response for Clinical Co-Pilot.">
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+    <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+    <a class="brand" href="/">
+        <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="14" fill="#6366f1"/><path d="M16 8v16M8 16h16" stroke="white" stroke-width="3" stroke-linecap="round"/></svg>
+        Clinical Co-Pilot
+    </a>
+    <div class="links">
+        <a href="/">Home</a>
+        <a href="/pricing.html">Pricing</a>
+        <a href="/trust.html">Trust</a>
+        <a href="/install.html">Install</a>
+        <a href="/faq.html">FAQ</a>
+        <a class="cta" href="/install.html#download">Download</a>
+    </div>
+</nav>
+
+<section class="hero">
+    <div class="container">
+        <h1>Trust and security</h1>
+        <p class="tagline">What Clinical Co-Pilot does with Protected Health Information, who has access to it, and how every claim is auditable. Designed against the HIPAA Security Rule and the OCR audit protocol.</p>
+        <div class="badge-row" style="margin-top: 32px;">
+            <span class="badge-pill"><strong>HIPAA-aligned</strong></span>
+            <span class="badge-pill"><strong>OpenAI Enterprise</strong> BAA + Zero Data Retention</span>
+            <span class="badge-pill"><strong>Hash-chained</strong> audit log, 7-year retention</span>
+            <span class="badge-pill"><strong>Read-only</strong> against FHIR</span>
+            <span class="badge-pill"><strong>SOC 2 Type II</strong> in progress</span>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="container container-narrow">
+        <h2>Posture summary</h2>
+        <p style="margin: 12px 0 16px;">Clinical Co-Pilot is a Business Associate under HIPAA. The sidecar transmits Protected Health Information (PHI) to the Large Language Model (LLM) for the diagnostic cross-check, with these guardrails:</p>
+        <ul style="color: var(--muted);">
+            <li><strong style="color: var(--text);">No write-back by default.</strong> The cross-check and chart-error scan are read-only. Document ingest is opt-in and requires per-suggestion clinician confirmation.</li>
+            <li><strong style="color: var(--text);">No training on PHI.</strong> OpenAI Enterprise tier with Zero Data Retention is enabled; prompts and completions are not retained by OpenAI and are not used to train models.</li>
+            <li><strong style="color: var(--text);">No PHI to Cohere.</strong> The reranking step runs on de-identified candidate strings, not the raw chart.</li>
+            <li><strong style="color: var(--text);">Audit-first design.</strong> Every prompt, response, and citation is hash-chained and replayable.</li>
+            <li><strong style="color: var(--text);">Encryption at rest and in transit.</strong> TLS 1.2+ in transit. Audit log encrypted at rest. Backups encrypted with customer-rotatable keys for Enterprise tier.</li>
+        </ul>
+    </div>
+</section>
+
+<section style="background: var(--bg-soft);">
+    <div class="container">
+        <h2 class="section-title">Data flow at a glance</h2>
+        <p class="section-sub">Where PHI lives, where it travels, and where it stops.</p>
+        <div class="diagram-wrap">
+            <svg viewBox="0 0 900 500" xmlns="http://www.w3.org/2000/svg" style="font-family: Inter, sans-serif; font-size: 13px;">
+                <defs>
+                    <marker id="arrow2" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+                        <path d="M0,0 L0,6 L9,3 z" fill="#818cf8"/>
+                    </marker>
+                </defs>
+                <rect x="20" y="20" width="240" height="460" rx="10" fill="none" stroke="#34d399" stroke-dasharray="6 4"/>
+                <text x="140" y="42" text-anchor="middle" fill="#34d399" font-weight="600">Customer VPC / on-prem</text>
+
+                <rect x="40" y="60" width="200" height="90" rx="8" fill="#1a2236" stroke="#2a3450"/>
+                <text x="140" y="85" text-anchor="middle" fill="#e2e8f0" font-weight="600">OpenEMR + module</text>
+                <text x="140" y="105" text-anchor="middle" fill="#94a3b8">FHIR resources at rest</text>
+                <text x="140" y="125" text-anchor="middle" fill="#94a3b8">Mints task token (HS256 JWT)</text>
+
+                <rect x="40" y="170" width="200" height="80" rx="8" fill="#1a2236" stroke="#2a3450"/>
+                <text x="140" y="195" text-anchor="middle" fill="#e2e8f0" font-weight="600">Local OAuth client</text>
+                <text x="140" y="215" text-anchor="middle" fill="#94a3b8">Issues short-lived</text>
+                <text x="140" y="232" text-anchor="middle" fill="#94a3b8">FHIR access tokens</text>
+
+                <rect x="320" y="20" width="260" height="460" rx="10" fill="none" stroke="#6366f1" stroke-dasharray="6 4"/>
+                <text x="450" y="42" text-anchor="middle" fill="#818cf8" font-weight="600">Sidecar (managed or self-host)</text>
+
+                <rect x="340" y="60" width="220" height="90" rx="8" fill="#1a2236" stroke="#6366f1"/>
+                <text x="450" y="85" text-anchor="middle" fill="#e2e8f0" font-weight="600">FastAPI sidecar</text>
+                <text x="450" y="105" text-anchor="middle" fill="#94a3b8">Verifies task token</text>
+                <text x="450" y="125" text-anchor="middle" fill="#94a3b8">Runs pairwise engine</text>
+
+                <rect x="340" y="170" width="220" height="80" rx="8" fill="#1a2236" stroke="#6366f1"/>
+                <text x="450" y="195" text-anchor="middle" fill="#e2e8f0" font-weight="600">Audit log (PG / disk)</text>
+                <text x="450" y="215" text-anchor="middle" fill="#94a3b8">Hash-chained, 7 years</text>
+                <text x="450" y="232" text-anchor="middle" fill="#94a3b8">PHI encrypted at rest</text>
+
+                <rect x="340" y="270" width="220" height="80" rx="8" fill="#1a2236" stroke="#6366f1"/>
+                <text x="450" y="295" text-anchor="middle" fill="#e2e8f0" font-weight="600">De-identify module</text>
+                <text x="450" y="315" text-anchor="middle" fill="#94a3b8">Strips PHI before rerank</text>
+                <text x="450" y="332" text-anchor="middle" fill="#94a3b8">Safe Harbor identifiers</text>
+
+                <rect x="340" y="370" width="220" height="90" rx="8" fill="#1a2236" stroke="#6366f1"/>
+                <text x="450" y="395" text-anchor="middle" fill="#e2e8f0" font-weight="600">S3 Object Lock anchor</text>
+                <text x="450" y="415" text-anchor="middle" fill="#94a3b8">Daily chain head write</text>
+                <text x="450" y="432" text-anchor="middle" fill="#94a3b8">Tamper-evident, offsite</text>
+
+                <rect x="640" y="20" width="240" height="460" rx="10" fill="none" stroke="#f87171" stroke-dasharray="6 4"/>
+                <text x="760" y="42" text-anchor="middle" fill="#f87171" font-weight="600">External BAA-covered</text>
+
+                <rect x="660" y="60" width="200" height="90" rx="8" fill="#1a2236" stroke="#f87171"/>
+                <text x="760" y="85" text-anchor="middle" fill="#e2e8f0" font-weight="600">OpenAI Enterprise</text>
+                <text x="760" y="105" text-anchor="middle" fill="#94a3b8">BAA + ZDR enabled</text>
+                <text x="760" y="125" text-anchor="middle" fill="#94a3b8">No training, no retention</text>
+
+                <rect x="660" y="270" width="200" height="80" rx="8" fill="#1a2236" stroke="#2a3450"/>
+                <text x="760" y="295" text-anchor="middle" fill="#e2e8f0" font-weight="600">Cohere Rerank</text>
+                <text x="760" y="315" text-anchor="middle" fill="#94a3b8">De-identified strings only</text>
+                <text x="760" y="332" text-anchor="middle" fill="#94a3b8">No PHI ever</text>
+
+                <line x1="240" y1="105" x2="340" y2="105" stroke="#818cf8" stroke-width="2" marker-end="url(#arrow2)"/>
+                <text x="290" y="98" text-anchor="middle" fill="#94a3b8" font-size="11">FHIR fetch</text>
+
+                <line x1="560" y1="105" x2="660" y2="105" stroke="#818cf8" stroke-width="2" marker-end="url(#arrow2)"/>
+                <text x="610" y="98" text-anchor="middle" fill="#94a3b8" font-size="11">LLM prompt</text>
+
+                <line x1="560" y1="310" x2="660" y2="310" stroke="#818cf8" stroke-width="2" marker-end="url(#arrow2)"/>
+                <text x="610" y="303" text-anchor="middle" fill="#94a3b8" font-size="11">De-id only</text>
+
+                <line x1="450" y1="150" x2="450" y2="170" stroke="#818cf8" stroke-width="2" marker-end="url(#arrow2)"/>
+                <line x1="450" y1="250" x2="450" y2="370" stroke="#818cf8" stroke-width="2" marker-end="url(#arrow2)"/>
+            </svg>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="container">
+        <h2 class="section-title">Business Associate chain</h2>
+        <p class="section-sub">Every party that touches PHI signs a Business Associate Agreement. Cohere never sees PHI so a BAA there is unnecessary by design, not omission.</p>
+        <table class="compare-table">
+            <thead>
+                <tr><th>Party</th><th>Role</th><th>BAA status</th><th>PHI exposure</th></tr>
+            </thead>
+            <tbody>
+                <tr><td class="feature-name">Scott Lydon (us)</td><td>Sidecar operator</td><td class="check">Signed with customer</td><td>Full, by design</td></tr>
+                <tr><td class="feature-name">OpenAI</td><td>LLM provider</td><td class="check">Enterprise BAA + ZDR</td><td>Per-request, then discarded</td></tr>
+                <tr><td class="feature-name">Hetzner Cloud (or customer cloud)</td><td>Infrastructure</td><td class="check">DPA + BAA via Vultr/Hetzner DSA</td><td>Encrypted at rest</td></tr>
+                <tr><td class="feature-name">AWS S3</td><td>Audit-log anchor</td><td class="check">AWS BAA</td><td>Hash only, not PHI</td></tr>
+                <tr><td class="feature-name">Cohere</td><td>Reranker</td><td class="dash">Not required</td><td>None (de-identified)</td></tr>
+                <tr><td class="feature-name">Stripe</td><td>Billing</td><td class="dash">Not required</td><td>None (no PHI in metadata)</td></tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section style="background: var(--bg-soft);">
+    <div class="container">
+        <h2 class="section-title">Security controls</h2>
+        <div class="grid-2">
+            <div class="panel feature">
+                <h3>Authentication and authorization</h3>
+                <p>Every sidecar request carries an HS256 task token minted by the OpenEMR module with a 5-minute lifetime. Token covers user ID, patient ID, and purpose-of-use. Sidecar verifies signature and freshness on every call.</p>
+            </div>
+            <div class="panel feature">
+                <h3>Encryption</h3>
+                <p>TLS 1.2+ in transit. Audit log encrypted at rest via PostgreSQL TDE (managed) or LUKS (self-host). Customer-rotatable keys for Enterprise tier.</p>
+            </div>
+            <div class="panel feature">
+                <h3>Tamper-evident audit log</h3>
+                <p>Every row hashes the previous row's hash + the new payload. Daily chain head writes to AWS S3 Object Lock with a 7-year retention policy. Tampering with the log is detectable.</p>
+            </div>
+            <div class="panel feature">
+                <h3>Read-only FHIR</h3>
+                <p>The sidecar holds a short-lived OAuth access token scoped to read on Patient, Condition, Observation, MedicationRequest, AllergyIntolerance, Encounter, Procedure, DocumentReference. No write scopes. No admin scopes.</p>
+            </div>
+            <div class="panel feature">
+                <h3>Injection guards</h3>
+                <p>Prompt injection guard rejects W2/W3-pattern foreign Patient/ references and instruction-shaped phrases in patient data. Per-session turn cap enforced by the chat router.</p>
+            </div>
+            <div class="panel feature">
+                <h3>License gating</h3>
+                <p>FastAPI dependency on every prompt endpoint resolves the license key against the licenses table. Subscriptions revoked by Stripe webhooks revoke the dependency on the next request.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="container container-narrow">
+        <h2>Incident response</h2>
+        <p style="margin: 12px 0;">If a breach is detected:</p>
+        <ol style="color: var(--muted);">
+            <li>Investigation begins within 24 hours of detection.</li>
+            <li>Customer notification within 60 days under HIPAA Breach Notification Rule.</li>
+            <li>Audit log replay establishes the affected patient set and the access pattern.</li>
+            <li>Post-incident report shared under NDA with affected customers.</li>
+        </ol>
+        <p style="margin-top: 16px;">Report a suspected incident to <a href="mailto:relays.inanity.0n@icloud.com?subject=Security%20incident%20report">relays.inanity.0n@icloud.com</a>. Pre-launch the security@ alias resolves to the same inbox.</p>
+    </div>
+</section>
+
+<section style="background: var(--bg-soft);">
+    <div class="container container-narrow">
+        <h2>Documents</h2>
+        <ul style="list-style: none; padding: 0; margin-top: 16px;">
+            <li style="padding: 10px 0; border-bottom: 1px solid var(--panel-border);"><a href="/baa.html">Business Associate Agreement template</a> &nbsp;<span style="color: var(--muted); font-size: 0.88rem;">— our standard customer-facing BAA</span></li>
+            <li style="padding: 10px 0; border-bottom: 1px solid var(--panel-border);"><a href="/privacy.html">Privacy policy</a> &nbsp;<span style="color: var(--muted); font-size: 0.88rem;">— what we collect, why, who it goes to</span></li>
+            <li style="padding: 10px 0; border-bottom: 1px solid var(--panel-border);"><a href="/terms.html">Terms of service</a> &nbsp;<span style="color: var(--muted); font-size: 0.88rem;">— service-level commitments, liability, term</span></li>
+            <li style="padding: 10px 0;"><a href="https://github.com/scott-lydon/openemr/blob/master/clinical-copilot/legal/VENDOR_SECURITY_QUESTIONNAIRE.md">Pre-filled vendor security questionnaire</a> &nbsp;<span style="color: var(--muted); font-size: 0.88rem;">— CAIQ / VSAQ pre-answered for procurement</span></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="site-footer">
+    <div class="footer-grid">
+        <div>
+            <strong style="color: var(--text); font-size: 1.05rem;">Clinical Co-Pilot</strong>
+            <p style="margin-top: 8px; color: var(--muted);">Pairwise diagnostic cross-check and chart-error scan for OpenEMR.</p>
+        </div>
+        <div>
+            <h4>Product</h4>
+            <a href="/">Overview</a>
+            <a href="/pricing.html">Pricing</a>
+            <a href="/install.html">Install</a>
+            <a href="/faq.html">FAQ</a>
+        </div>
+        <div>
+            <h4>Trust</h4>
+            <a href="/trust.html">Security overview</a>
+            <a href="/baa.html">BAA template</a>
+            <a href="/privacy.html">Privacy policy</a>
+            <a href="/terms.html">Terms of service</a>
+        </div>
+        <div>
+            <h4>Source</h4>
+            <a href="https://github.com/scott-lydon/openemr">GitHub</a>
+            <a href="https://github.com/scott-lydon/openemr/releases">Releases</a>
+            <a href="https://github.com/scott-lydon/openemr/tree/master/interface/modules/custom_modules/oe-module-clinical-copilot">Module source</a>
+            <a href="mailto:relays.inanity.0n@icloud.com">Contact</a>
+        </div>
+    </div>
+    <div class="colophon">
+        Copyright (c) 2026 Scott Lydon. OpenEMR module licensed GPL-3.0-or-later.
+    </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FAQ — Clinical Co-Pilot for OpenEMR</title>
+    <meta name="description" content="Frequently asked questions about Clinical Co-Pilot: HIPAA posture, BAA, pricing, install, AI safety, audit, on-prem, and more.">
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+    <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+    <a class="brand" href="/">
+        <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="14" fill="#6366f1"/><path d="M16 8v16M8 16h16" stroke="white" stroke-width="3" stroke-linecap="round"/></svg>
+        Clinical Co-Pilot
+    </a>
+    <div class="links">
+        <a href="/">Home</a>
+        <a href="/pricing.html">Pricing</a>
+        <a href="/trust.html">Trust</a>
+        <a href="/install.html">Install</a>
+        <a href="/faq.html">FAQ</a>
+        <a class="cta" href="/install.html#download">Download</a>
+    </div>
+</nav>
+
+<section class="hero">
+    <div class="container">
+        <h1>Frequently asked questions</h1>
+        <p class="tagline">If the answer is not here, email <a href="mailto:relays.inanity.0n@icloud.com">relays.inanity.0n@icloud.com</a>. We reply within a business day.</p>
+    </div>
+</section>
+
+<section>
+    <div class="container container-narrow">
+
+        <h2 style="margin: 32px 0 16px;">Product</h2>
+
+        <details class="faq-item" open>
+            <summary>What does the Co-Pilot actually do?</summary>
+            <div class="answer">
+                <p>Two things on every patient visit. First, the pairwise diagnostic cross-check: the clinician clicks one button, the sidecar pulls the chart, and the engine returns a ranked tournament of candidate diagnoses with citations into the patient's own FHIR resources. Second (Pro tier), a chart-error scan that flags internal contradictions like a med recorded as active that the latest diagnosis no longer supports, or units that disagree across encounters.</p>
+                <p>The clinician decides what to do with the output. The Co-Pilot does not prescribe, order, or modify the chart.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>Why pairwise comparison and not a ranked list?</summary>
+            <div class="answer">
+                <p>List-style differential diagnosis tools have an order bias: the first-ranked answer wins the clinician's attention even when the confidence gap between it and the second-ranked answer is tiny. A pairwise tournament forces every candidate to be defended against every other one, so the output reflects evidence strength rather than list position. The engine refuses to declare a winner if it cannot cite a FHIR resource for the deciding feature.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>What patient data does the sidecar read?</summary>
+            <div class="answer">
+                <p>The standard FHIR resource set: Patient, Condition, MedicationRequest, AllergyIntolerance, Observation, Encounter, Procedure, DocumentReference. All read-only. The sidecar holds an OAuth access token scoped exclusively to these read endpoints; it cannot write anything.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>Will the Co-Pilot ever write to the chart?</summary>
+            <div class="answer">
+                <p>Document ingest (Pro tier) is the only flow that produces structured FHIR write-back, and every suggested resource is shown to the clinician for confirmation before it lands. The diagnostic cross-check and chart-error scan are strictly read-only. There is no automatic charting.</p>
+            </div>
+        </details>
+
+        <h2 style="margin: 32px 0 16px;">Compliance and security</h2>
+
+        <details class="faq-item">
+            <summary>Is the Co-Pilot HIPAA compliant?</summary>
+            <div class="answer">
+                <p>HIPAA does not have a certification you can hand someone. What we can say: the architecture is aligned with the HIPAA Security Rule and the OCR audit protocol. We sign a Business Associate Agreement with every paying customer. OpenAI is on our BAA chain via their Enterprise tier with Zero Data Retention enabled. The audit log meets the seven-year retention requirement.</p>
+                <p>Full posture: <a href="/trust.html">trust.html</a>.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>Do you sign a BAA?</summary>
+            <div class="answer">
+                <p>Yes. Our customer-facing BAA template is at <a href="/baa.html">baa.html</a>. Enterprise tier customers can swap in their own BAA after counsel redlines ours.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>Does OpenAI train on the prompts we send?</summary>
+            <div class="answer">
+                <p>No. We use OpenAI on the Enterprise tier with Zero Data Retention enabled. OpenAI does not retain prompts or completions, and does not use the data to train models. Our contract with them is the standard Enterprise BAA.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>What about the reranker? Does PHI go to Cohere?</summary>
+            <div class="answer">
+                <p>No. The rerank step runs on de-identified candidate strings produced by our internal de-identifier (HIPAA Safe Harbor identifiers removed). The mapping back to the original is held in memory inside our sidecar; Cohere never sees PHI. That is why a BAA with Cohere is not necessary by design.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>How does the audit log work?</summary>
+            <div class="answer">
+                <p>Every clinician prompt, every AI response, every citation, and the exact set of FHIR resources fetched is appended to a hash-chained log. Each row hashes the previous row's hash plus the new payload, so tampering is detectable. Daily the chain head is written to AWS S3 Object Lock with a seven-year retention policy. An auditor can replay any session from the log without re-running the LLM.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>What about SOC 2?</summary>
+            <div class="answer">
+                <p>SOC 2 Type II is in progress on Vanta. The observation window is six months; the Type II report is expected within twelve months of the first paying hospital customer. The Type I report can be made available under NDA earlier on request. Pre-SOC, we publish a pre-filled CAIQ and VSAQ at <a href="https://github.com/scott-lydon/openemr/blob/master/clinical-copilot/legal/VENDOR_SECURITY_QUESTIONNAIRE.md">VENDOR_SECURITY_QUESTIONNAIRE.md</a>.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>HITRUST?</summary>
+            <div class="answer">
+                <p>Available for Enterprise tier customers who make it a contract condition. Cost runs $60K to $100K for the formal assessment; we will not pursue it until a hospital contract justifies the spend.</p>
+            </div>
+        </details>
+
+        <h2 style="margin: 32px 0 16px;">Install and operations</h2>
+
+        <details class="faq-item">
+            <summary>What OpenEMR versions are supported?</summary>
+            <div class="answer">
+                <p>OpenEMR 7.0 and newer, PHP 8.2 or newer. The module is packaged in the OpenEMR custom module convention and registers via the standard event-listener system; no core patch is required.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>Can I self-host the sidecar?</summary>
+            <div class="answer">
+                <p>Yes. Multi-arch Docker images are published on GitHub Container Registry on every release tag. The full stack runs from <code>clinical-copilot/deploy/docker-compose.openemr-sidecar.yml</code>. Enterprise tier includes quarterly upgrade ride-along.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>How long is install?</summary>
+            <div class="answer">
+                <p>For most clinics: five minutes from zip download to a working button on the patient summary. Step-by-step at <a href="/install.html">install.html</a>.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>What if my OpenEMR is behind a corporate proxy?</summary>
+            <div class="answer">
+                <p>The module's outbound traffic is only to the sidecar URL you configure. If you self-host, that can be a private address inside your VPC and never crosses the public internet. If you use the managed sidecar, allowlist <code>api.copilot.scott-lydon.dev</code> on the proxy.</p>
+            </div>
+        </details>
+
+        <h2 style="margin: 32px 0 16px;">Billing</h2>
+
+        <details class="faq-item">
+            <summary>Who handles billing?</summary>
+            <div class="answer">
+                <p>Stripe. Card data never touches us. After signup you get a Stripe Customer Portal link in your welcome email where you can change plan, update card, or cancel.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>Free trial?</summary>
+            <div class="answer">
+                <p>Yes. Fourteen days on Pro tier for up to three clinicians. No credit card required.</p>
+            </div>
+        </details>
+
+        <details class="faq-item">
+            <summary>Annual prepay discount?</summary>
+            <div class="answer">
+                <p>Yes, ten percent off for annual prepay on Starter and Pro. Email us before signup so we can issue the invoice instead of pointing you at the Stripe Checkout page.</p>
+            </div>
+        </details>
+
+    </div>
+</section>
+
+<footer class="site-footer">
+    <div class="footer-grid">
+        <div>
+            <strong style="color: var(--text); font-size: 1.05rem;">Clinical Co-Pilot</strong>
+            <p style="margin-top: 8px; color: var(--muted);">Pairwise diagnostic cross-check and chart-error scan for OpenEMR.</p>
+        </div>
+        <div>
+            <h4>Product</h4>
+            <a href="/">Overview</a>
+            <a href="/pricing.html">Pricing</a>
+            <a href="/install.html">Install</a>
+            <a href="/faq.html">FAQ</a>
+        </div>
+        <div>
+            <h4>Trust</h4>
+            <a href="/trust.html">Security overview</a>
+            <a href="/baa.html">BAA template</a>
+            <a href="/privacy.html">Privacy policy</a>
+            <a href="/terms.html">Terms of service</a>
+        </div>
+        <div>
+            <h4>Source</h4>
+            <a href="https://github.com/scott-lydon/openemr">GitHub</a>
+            <a href="https://github.com/scott-lydon/openemr/releases">Releases</a>
+            <a href="https://github.com/scott-lydon/openemr/tree/master/interface/modules/custom_modules/oe-module-clinical-copilot">Module source</a>
+            <a href="mailto:relays.inanity.0n@icloud.com">Contact</a>
+        </div>
+    </div>
+    <div class="colophon">
+        Copyright (c) 2026 Scott Lydon. OpenEMR module licensed GPL-3.0-or-later.
+    </div>
+</footer>
+
+</body>
+</html>

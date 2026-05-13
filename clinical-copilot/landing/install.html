@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Install — Clinical Co-Pilot for OpenEMR</title>
+    <meta name="description" content="Five-minute install guide for the Clinical Co-Pilot OpenEMR module. Download the zip, drop it into custom modules, click Install, paste your license key.">
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+    <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+    <a class="brand" href="/">
+        <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="14" fill="#6366f1"/><path d="M16 8v16M8 16h16" stroke="white" stroke-width="3" stroke-linecap="round"/></svg>
+        Clinical Co-Pilot
+    </a>
+    <div class="links">
+        <a href="/">Home</a>
+        <a href="/pricing.html">Pricing</a>
+        <a href="/trust.html">Trust</a>
+        <a href="/install.html">Install</a>
+        <a href="/faq.html">FAQ</a>
+        <a class="cta" href="#download">Download</a>
+    </div>
+</nav>
+
+<section class="hero">
+    <div class="container">
+        <h1>Install the Clinical Co-Pilot module.</h1>
+        <p class="tagline">Five minutes from download to a working button on the patient summary. Two routes: managed sidecar (we host the diagnostic engine) or self-host (you run our Docker images).</p>
+    </div>
+</section>
+
+<section id="download" style="padding-top: 0;">
+    <div class="container container-narrow">
+        <div class="panel">
+            <h2 style="margin-bottom: 12px;">Download the module</h2>
+            <p style="margin-bottom: 20px;">Latest release: <strong style="color: var(--text);" id="version-string">v0.1.0</strong> &middot; OpenEMR 7.0+ &middot; PHP 8.2+</p>
+            <a class="btn btn-primary btn-lg" href="downloads/oe-module-clinical-copilot-latest.zip" download>Download oe-module-clinical-copilot.zip</a>
+            <p style="margin-top: 16px; font-size: 0.9rem; color: var(--muted);">
+                Verify the checksum before extracting:
+                <code id="sha256-string">SHA-256: ad55ae181335601d851f59857fff39253bd104d3b6a1ab647d1889f8b97d198b</code>
+            </p>
+            <p style="margin-top: 12px; font-size: 0.88rem;"><a href="https://github.com/scott-lydon/openemr/releases">Other versions on GitHub Releases</a> &middot; <a href="https://github.com/scott-lydon/openemr/tree/master/interface/modules/custom_modules/oe-module-clinical-copilot">Browse source</a></p>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="container container-narrow">
+        <h2 class="section-title" style="text-align: left;">Five steps from download to running</h2>
+
+        <div class="steps">
+            <div class="step">
+                <div class="num">1</div>
+                <div class="body">
+                    <h3>Download and verify</h3>
+                    <p>Click the download button above. In a terminal, verify the file integrity:</p>
+<pre><code>shasum -a 256 oe-module-clinical-copilot-latest.zip
+# compare to oe-module-clinical-copilot-latest.zip.sha256</code></pre>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="num">2</div>
+                <div class="body">
+                    <h3>Unzip into your OpenEMR custom modules folder</h3>
+                    <p>On a typical install:</p>
+<pre><code>unzip oe-module-clinical-copilot-latest.zip \
+  -d /var/www/openemr/interface/modules/custom_modules/</code></pre>
+                    <p>For Docker, mount or copy into the same path inside the OpenEMR container.</p>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="num">3</div>
+                <div class="body">
+                    <h3>Register and install in the Module Manager</h3>
+                    <p>In OpenEMR, sign in as admin. Open <strong>Modules &rsaquo; Manage Modules</strong>. Find <code>Clinical Co-Pilot</code> in the Unregistered list. Click <strong>Register</strong>, then <strong>Install</strong>, then <strong>Enable</strong>.</p>
+                    <p style="font-size: 0.88rem; color: var(--muted);">The module's <code>InstallListener</code> creates a private settings table and seeds a JWT signing key. Nothing else is touched.</p>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="num">4</div>
+                <div class="body">
+                    <h3>Paste the sidecar URL and license key</h3>
+                    <p>Open <strong>Administration &rsaquo; Globals &rsaquo; Clinical Co-Pilot</strong> in OpenEMR. Paste:</p>
+                    <ul>
+                        <li><strong>Sidecar URL</strong> — for the managed option: <code>https://api.copilot.scott-lydon.dev</code></li>
+                        <li><strong>License key</strong> — the one in your welcome email after Stripe signup</li>
+                    </ul>
+                    <p>Click <strong>Test connectivity</strong>. You should see <code>auth_method: HS256_jwt</code> and <code>license_state: active</code>.</p>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="num">5</div>
+                <div class="body">
+                    <h3>Open any patient chart and click the button</h3>
+                    <p>The Co-Pilot button now appears on the patient summary. Click it. The first pairwise cross-check should return within ~5 seconds with citations into the chart.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section id="stripe" style="background: var(--bg-soft);">
+    <div class="container container-narrow">
+        <h2 class="section-title" style="text-align: left;">Where does the license key come from?</h2>
+        <p style="margin-bottom: 20px;">When you click <em>Start trial</em> on the <a href="/pricing.html">pricing page</a>, Stripe Checkout collects your email and (for paid tiers) a card. The webhook handler in the sidecar materializes a row in the <code>licenses</code> table and emails you the key. Pre-launch (before the Stripe products are live) email us at <a href="mailto:relays.inanity.0n@icloud.com">relays.inanity.0n@icloud.com</a> for a trial key.</p>
+
+        <div class="callout warning">
+            <strong style="color: var(--text);">License key vs. JWT signing key.</strong>
+            <p style="margin-top: 6px;">The license key gates whether the sidecar accepts requests from your install. The JWT signing key is a separate per-install secret that the module mints task tokens with. Both are managed in <em>Administration &rsaquo; Globals &rsaquo; Clinical Co-Pilot</em>. Never share either.</p>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="container container-narrow">
+        <h2 class="section-title" style="text-align: left;">Self-host the sidecar (optional)</h2>
+        <p style="margin-bottom: 16px;">If you want the LLM call to run inside your VPC, use the self-host compose stack. Multi-arch images are published on every release tag.</p>
+<pre><code>cd /opt
+git clone https://github.com/scott-lydon/openemr.git
+cd openemr/clinical-copilot/deploy
+cp .env.example .env  # set OPENAI_API_KEY, COPILOT_JWT_SIGNING_KEY, LICENSE_KEY
+docker compose -f docker-compose.openemr-sidecar.yml up -d</code></pre>
+        <p style="margin-top: 16px;">Then set the <strong>Sidecar URL</strong> in OpenEMR Globals to <code>http://localhost:8088</code> (or whatever host:port your sidecar exposes).</p>
+        <p style="margin-top: 12px; font-size: 0.9rem; color: var(--muted);">Full self-host guide: <a href="https://github.com/scott-lydon/openemr/blob/master/interface/modules/custom_modules/oe-module-clinical-copilot/OPERATOR_GUIDE.md">OPERATOR_GUIDE.md</a>.</p>
+    </div>
+</section>
+
+<section style="background: var(--bg-soft);">
+    <div class="container container-narrow">
+        <h2 class="section-title" style="text-align: left;">Common problems</h2>
+
+        <details class="faq-item">
+            <summary>Module shows up in Manage Modules but Install is greyed out</summary>
+            <div class="answer">
+                <p>Usually a file permissions issue on <code>interface/modules/custom_modules/oe-module-clinical-copilot/</code>. The OpenEMR PHP process needs read access. On Linux, run <code>chown -R www-data:www-data</code> on the folder (replace <code>www-data</code> with whatever user PHP-FPM runs as on your install).</p>
+            </div>
+        </details>
+        <details class="faq-item">
+            <summary>Test connectivity returns license_state: missing</summary>
+            <div class="answer">
+                <p>The license key in OpenEMR Globals does not match a row in the sidecar's <code>licenses</code> table. Check that the Stripe webhook fired (the dashboard has an event log) and that your license key was copied without surrounding whitespace.</p>
+            </div>
+        </details>
+        <details class="faq-item">
+            <summary>Test connectivity returns auth_method: anon</summary>
+            <div class="answer">
+                <p>The sidecar accepted the request without a JWT, which means the module did not mint or send one. Check that the JWT signing key is set in OpenEMR Globals (Clinical Co-Pilot section) and not just blank. Re-running <code>Install</code> on the module regenerates it.</p>
+            </div>
+        </details>
+        <details class="faq-item">
+            <summary>The Co-Pilot button does not appear on the patient summary</summary>
+            <div class="answer">
+                <p>The render listener is wired to <code>RenderEvent::EVENT_SECTION_LIST_RENDER_TOP</code> and is only registered when the module is Enabled. Re-check that the module is <strong>Enabled</strong> in Manage Modules. Then check the OpenEMR PHP error log for any bootstrap errors:</p>
+<pre><code>tail -f /var/log/openemr/php-error.log</code></pre>
+            </div>
+        </details>
+    </div>
+</section>
+
+<footer class="site-footer">
+    <div class="footer-grid">
+        <div>
+            <strong style="color: var(--text); font-size: 1.05rem;">Clinical Co-Pilot</strong>
+            <p style="margin-top: 8px; color: var(--muted);">Pairwise diagnostic cross-check and chart-error scan for OpenEMR.</p>
+        </div>
+        <div>
+            <h4>Product</h4>
+            <a href="/">Overview</a>
+            <a href="/pricing.html">Pricing</a>
+            <a href="/install.html">Install</a>
+            <a href="/faq.html">FAQ</a>
+        </div>
+        <div>
+            <h4>Trust</h4>
+            <a href="/trust.html">Security overview</a>
+            <a href="/baa.html">BAA template</a>
+            <a href="/privacy.html">Privacy policy</a>
+            <a href="/terms.html">Terms of service</a>
+        </div>
+        <div>
+            <h4>Source</h4>
+            <a href="https://github.com/scott-lydon/openemr">GitHub</a>
+            <a href="https://github.com/scott-lydon/openemr/releases">Releases</a>
+            <a href="https://github.com/scott-lydon/openemr/tree/master/interface/modules/custom_modules/oe-module-clinical-copilot">Module source</a>
+            <a href="mailto:relays.inanity.0n@icloud.com">Contact</a>
+        </div>
+    </div>
+    <div class="colophon">
+        Copyright (c) 2026 Scott Lydon. OpenEMR module licensed GPL-3.0-or-later.
+    </div>
+</footer>
+
+</body>
+</html>

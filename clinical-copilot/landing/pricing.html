@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pricing — Clinical Co-Pilot for OpenEMR</title>
+    <meta name="description" content="Per-clinician, monthly pricing for Clinical Co-Pilot. Free 14-day trial without a credit card. Cancel any time from the Stripe portal.">
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+    <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+    <a class="brand" href="/">
+        <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="14" fill="#6366f1"/><path d="M16 8v16M8 16h16" stroke="white" stroke-width="3" stroke-linecap="round"/></svg>
+        Clinical Co-Pilot
+    </a>
+    <div class="links">
+        <a href="/">Home</a>
+        <a href="/pricing.html">Pricing</a>
+        <a href="/trust.html">Trust</a>
+        <a href="/install.html">Install</a>
+        <a href="/faq.html">FAQ</a>
+        <a class="cta" href="/install.html#download">Download</a>
+    </div>
+</nav>
+
+<section class="hero">
+    <div class="container">
+        <h1>Per-clinician, monthly, cancel any time.</h1>
+        <p class="tagline">Start a 14-day free trial without a credit card. Pricing is per clinician (anyone who actually clicks the Co-Pilot button on a chart), not per seat or per chart.</p>
+    </div>
+</section>
+
+<section style="padding-top: 0;">
+    <div class="container">
+        <div class="price-grid">
+            <div class="price-card">
+                <div class="name">Starter</div>
+                <div class="price"><span class="currency">$</span>99</div>
+                <div class="period">per clinician / month</div>
+                <ul>
+                    <li>Pairwise diagnostic cross-check</li>
+                    <li>Follow-up questions</li>
+                    <li>Citations required on every claim</li>
+                    <li>Hash-chained audit log (7-year retention)</li>
+                    <li>Email support, 24-hour response</li>
+                    <li>Self-hosted or managed sidecar</li>
+                </ul>
+                <!-- REPLACE_WITH_STRIPE_LINK: starter checkout URL goes here. See /install.html#stripe. -->
+                <a class="btn btn-primary" href="REPLACE_WITH_STRIPE_LINK_STARTER">Start 14-day trial</a>
+            </div>
+            <div class="price-card featured">
+                <span class="badge">Most popular</span>
+                <div class="name">Pro</div>
+                <div class="price"><span class="currency">$</span>249</div>
+                <div class="period">per clinician / month</div>
+                <ul>
+                    <li>Everything in Starter</li>
+                    <li>Chart-error scan</li>
+                    <li>Document ingest (PDF to FHIR with clinician confirm)</li>
+                    <li>SOC 2 Type II report (once issued)</li>
+                    <li>Priority email support, 4-hour response</li>
+                    <li>Customer-facing BAA included</li>
+                </ul>
+                <!-- REPLACE_WITH_STRIPE_LINK: pro checkout URL goes here. See /install.html#stripe. -->
+                <a class="btn btn-primary" href="REPLACE_WITH_STRIPE_LINK_PRO">Start 14-day trial</a>
+            </div>
+            <div class="price-card">
+                <div class="name">Enterprise</div>
+                <div class="price" style="font-size: 1.8rem; padding-top: 28px;">Contact us</div>
+                <div class="period">volume + on-prem + SSO</div>
+                <ul>
+                    <li>Everything in Pro</li>
+                    <li>SAML / OpenID Connect Single Sign-On</li>
+                    <li>Self-hosted sidecar with quarterly upgrade ride-along</li>
+                    <li>Customer-named BAA (your counsel redlines)</li>
+                    <li>HITRUST CSF inheritance (once issued)</li>
+                    <li>Dedicated Slack or Teams channel</li>
+                    <li>Annual pen-test report shareable under NDA</li>
+                </ul>
+                <a class="btn btn-secondary" href="mailto:relays.inanity.0n@icloud.com?subject=Clinical%20Co-Pilot%20Enterprise%20inquiry">Email us</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section style="background: var(--bg-soft);">
+    <div class="container">
+        <h2 class="section-title">Feature comparison</h2>
+        <p class="section-sub">Everything in the lower tier is included in the higher tier.</p>
+        <div style="overflow-x: auto;">
+            <table class="compare-table">
+                <thead>
+                    <tr>
+                        <th>Feature</th>
+                        <th>Starter</th>
+                        <th>Pro</th>
+                        <th>Enterprise</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td class="feature-name">Pairwise diagnostic cross-check</td><td class="check">Yes</td><td class="check">Yes</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">Citations to FHIR resources</td><td class="check">Yes</td><td class="check">Yes</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">Hash-chained audit log</td><td class="check">Yes</td><td class="check">Yes</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">Customer-facing BAA</td><td class="check">Yes</td><td class="check">Yes</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">Chart-error scan</td><td class="dash">—</td><td class="check">Yes</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">Document ingest (PDF to FHIR)</td><td class="dash">—</td><td class="check">Yes</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">SOC 2 Type II report access</td><td class="dash">—</td><td class="check">Yes</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">Priority support (4-hour response)</td><td class="dash">—</td><td class="check">Yes</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">SAML / OpenID Connect SSO</td><td class="dash">—</td><td class="dash">—</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">Self-hosted sidecar</td><td class="dash">—</td><td class="dash">—</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">Customer-named BAA</td><td class="dash">—</td><td class="dash">—</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">Dedicated chat channel</td><td class="dash">—</td><td class="dash">—</td><td class="check">Yes</td></tr>
+                    <tr><td class="feature-name">Annual pen-test report (under NDA)</td><td class="dash">—</td><td class="dash">—</td><td class="check">Yes</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="container container-narrow">
+        <h2 class="section-title">Frequently asked about pricing</h2>
+
+        <details class="faq-item">
+            <summary>What counts as a clinician?</summary>
+            <div class="answer">
+                <p>Anyone who actually clicks the Co-Pilot button on a chart in a given month. Staff who never touch the Co-Pilot UI do not count. The license check is on the OpenEMR user ID of the person who initiated the request.</p>
+            </div>
+        </details>
+        <details class="faq-item">
+            <summary>What does the 14-day trial include?</summary>
+            <div class="answer">
+                <p>Pro tier for fourteen days on up to three clinicians. No credit card. At day fourteen the trial flips off; nothing is charged unless you explicitly subscribe in the Stripe portal.</p>
+            </div>
+        </details>
+        <details class="faq-item">
+            <summary>How do I cancel?</summary>
+            <div class="answer">
+                <p>Sign in to the Stripe customer portal we email you on signup and click Cancel subscription. The Co-Pilot stops accepting prompts at the end of the current billing period. The audit log is retained for the full seven years regardless of subscription status, per HIPAA.</p>
+            </div>
+        </details>
+        <details class="faq-item">
+            <summary>Volume discount?</summary>
+            <div class="answer">
+                <p>Above twenty clinicians on Pro, email us for a quote. Enterprise tier is always priced for the customer's scale and on-prem requirements.</p>
+            </div>
+        </details>
+        <details class="faq-item">
+            <summary>Do you offer a free tier?</summary>
+            <div class="answer">
+                <p>There is no perpetual free tier today; the LLM and infrastructure costs do not allow for one. The 14-day Pro trial is the closest path to evaluating without a contract.</p>
+            </div>
+        </details>
+    </div>
+</section>
+
+<section id="final-cta" style="background: var(--bg-soft);">
+    <div class="container container-narrow" style="text-align: center;">
+        <h2>Try it on your own OpenEMR.</h2>
+        <p class="lead" style="margin: 16px 0 32px;">Download the module and start a 14-day Pro trial. No credit card. No sales call.</p>
+        <div class="hero-ctas">
+            <a class="btn btn-primary btn-lg" href="/install.html#download">Download module</a>
+            <a class="btn btn-secondary btn-lg" href="mailto:relays.inanity.0n@icloud.com?subject=Clinical%20Co-Pilot%20question">Ask a question</a>
+        </div>
+    </div>
+</section>
+
+<footer class="site-footer">
+    <div class="footer-grid">
+        <div>
+            <strong style="color: var(--text); font-size: 1.05rem;">Clinical Co-Pilot</strong>
+            <p style="margin-top: 8px; color: var(--muted);">Pairwise diagnostic cross-check and chart-error scan for OpenEMR. HIPAA-aligned. Read-only. Citations required.</p>
+        </div>
+        <div>
+            <h4>Product</h4>
+            <a href="/">Overview</a>
+            <a href="/pricing.html">Pricing</a>
+            <a href="/install.html">Install</a>
+            <a href="/faq.html">FAQ</a>
+        </div>
+        <div>
+            <h4>Trust</h4>
+            <a href="/trust.html">Security overview</a>
+            <a href="/baa.html">BAA template</a>
+            <a href="/privacy.html">Privacy policy</a>
+            <a href="/terms.html">Terms of service</a>
+        </div>
+        <div>
+            <h4>Source</h4>
+            <a href="https://github.com/scott-lydon/openemr">GitHub</a>
+            <a href="https://github.com/scott-lydon/openemr/releases">Releases</a>
+            <a href="https://github.com/scott-lydon/openemr/tree/master/interface/modules/custom_modules/oe-module-clinical-copilot">Module source</a>
+            <a href="mailto:relays.inanity.0n@icloud.com">Contact</a>
+        </div>
+    </div>
+    <div class="colophon">
+        Copyright (c) 2026 Scott Lydon. OpenEMR module licensed GPL-3.0-or-later.
+    </div>
+</footer>
+
+</body>
+</html>
