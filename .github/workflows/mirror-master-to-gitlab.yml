@@ -60,6 +60,21 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
+          # labs.gauntletai.com runs sshd for git on port 22022, not 22.
+          # Local Macs have this in ~/.ssh/config and never notice; the runner
+          # has no such config so we write one. Without this the runner hits a
+          # different sshd on port 22 and gets Permission denied (publickey).
+          cat > ~/.ssh/config <<'EOF'
+          Host labs.gauntletai.com
+            Port 22022
+            User git
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+          chmod 600 ~/.ssh/config
+
           # Use printenv to avoid shell-expansion gotchas (printf can mangle
           # backslashes in the key body; cat-via-env preserves the secret as
           # delivered by Actions).
@@ -90,10 +105,11 @@ jobs:
           echo "${DERIVED_PUB}" | ssh-keygen -lf -
 
           # Pin labs.gauntletai.com host keys so we never accept-on-first-use.
-          if ! ssh-keyscan -t rsa,ecdsa,ed25519 labs.gauntletai.com 2>/tmp/keyscan.err >> ~/.ssh/known_hosts; then
-            echo "::error::ssh-keyscan failed for labs.gauntletai.com:"
+          # Port 22022 because that's where this self-hosted GitLab's git sshd lives.
+          if ! ssh-keyscan -p 22022 -t rsa,ecdsa,ed25519 labs.gauntletai.com 2>/tmp/keyscan.err >> ~/.ssh/known_hosts; then
+            echo "::error::ssh-keyscan failed for labs.gauntletai.com:22022:"
             cat /tmp/keyscan.err
-            echo "::error::Check whether labs.gauntletai.com is reachable from GitHub Actions runners."
+            echo "::error::Check whether labs.gauntletai.com:22022 is reachable from GitHub Actions runners."
             exit 1
           fi
           chmod 644 ~/.ssh/known_hosts
