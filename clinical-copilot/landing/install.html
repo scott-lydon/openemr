@@ -14,16 +14,16 @@
 <body>
 
 <nav class="site-nav">
-    <a class="brand" href="/">
+    <a class="brand" href="index.html">
         <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="14" fill="#6366f1"/><path d="M16 8v16M8 16h16" stroke="white" stroke-width="3" stroke-linecap="round"/></svg>
         Clinical Co-Pilot
     </a>
     <div class="links">
-        <a href="/">Home</a>
-        <a href="/pricing.html">Pricing</a>
-        <a href="/trust.html">Trust</a>
-        <a href="/install.html">Install</a>
-        <a href="/faq.html">FAQ</a>
+        <a href="index.html">Home</a>
+        <a href="pricing.html">Pricing</a>
+        <a href="trust.html">Trust</a>
+        <a href="install.html">Install</a>
+        <a href="faq.html">FAQ</a>
         <a class="cta" href="#download">Download</a>
     </div>
 </nav>
@@ -43,7 +43,7 @@
             <a class="btn btn-primary btn-lg" href="downloads/oe-module-clinical-copilot-latest.zip" download>Download oe-module-clinical-copilot.zip</a>
             <p style="margin-top: 16px; font-size: 0.9rem; color: var(--muted);">
                 Verify the checksum before extracting:
-                <code id="sha256-string">SHA-256: ad55ae181335601d851f59857fff39253bd104d3b6a1ab647d1889f8b97d198b</code>
+                <code id="sha256-string">SHA-256: b50480b76f96ce4b9d6079d61f6e12ad912460036acc435218948c7a71ee6481</code>
             </p>
             <p style="margin-top: 12px; font-size: 0.88rem;"><a href="https://github.com/scott-lydon/openemr/releases">Other versions on GitHub Releases</a> &middot; <a href="https://github.com/scott-lydon/openemr/tree/master/interface/modules/custom_modules/oe-module-clinical-copilot">Browse source</a></p>
         </div>
@@ -102,7 +102,7 @@
                 <div class="num">5</div>
                 <div class="body">
                     <h3>Open any patient chart and click the button</h3>
-                    <p>The Co-Pilot button now appears on the patient summary. Click it. The first pairwise cross-check should return within ~5 seconds with citations into the chart.</p>
+                    <p>The Co-Pilot button now appears on the patient summary. Click it. The first cross-check should return within ~5 seconds with citations into the chart.</p>
                 </div>
             </div>
         </div>
@@ -112,7 +112,7 @@
 <section id="stripe" style="background: var(--bg-soft);">
     <div class="container container-narrow">
         <h2 class="section-title" style="text-align: left;">Where does the license key come from?</h2>
-        <p style="margin-bottom: 20px;">When you click <em>Start trial</em> on the <a href="/pricing.html">pricing page</a>, Stripe Checkout collects your email and (for paid tiers) a card. The webhook handler in the sidecar materializes a row in the <code>licenses</code> table and emails you the key. Pre-launch (before the Stripe products are live) email us at <a href="mailto:relays.inanity.0n@icloud.com">relays.inanity.0n@icloud.com</a> for a trial key.</p>
+        <p style="margin-bottom: 20px;">When you click <em>Start trial</em> on the <a href="pricing.html">pricing page</a>, Stripe Checkout collects your email and (for paid tiers) a card. The webhook handler in the sidecar materializes a row in the <code>licenses</code> table and emails you the key. Pre-launch (before the Stripe products are live) email us at <a href="mailto:relays.inanity.0n@icloud.com">relays.inanity.0n@icloud.com</a> for a trial key.</p>
 
         <div class="callout warning">
             <strong style="color: var(--text);">License key vs. JWT signing key.</strong>
@@ -171,21 +171,21 @@ docker compose -f docker-compose.openemr-sidecar.yml up -d</code></pre>
     <div class="footer-grid">
         <div>
             <strong style="color: var(--text); font-size: 1.05rem;">Clinical Co-Pilot</strong>
-            <p style="margin-top: 8px; color: var(--muted);">Pairwise diagnostic cross-check and chart-error scan for OpenEMR.</p>
+            <p style="margin-top: 8px; color: var(--muted);">AI diagnostic cross-check and chart-error scan for OpenEMR.</p>
         </div>
         <div>
             <h4>Product</h4>
-            <a href="/">Overview</a>
-            <a href="/pricing.html">Pricing</a>
-            <a href="/install.html">Install</a>
-            <a href="/faq.html">FAQ</a>
+            <a href="index.html">Overview</a>
+            <a href="pricing.html">Pricing</a>
+            <a href="install.html">Install</a>
+            <a href="faq.html">FAQ</a>
         </div>
         <div>
             <h4>Trust</h4>
-            <a href="/trust.html">Security overview</a>
-            <a href="/baa.html">BAA template</a>
-            <a href="/privacy.html">Privacy policy</a>
-            <a href="/terms.html">Terms of service</a>
+            <a href="trust.html">Security overview</a>
+            <a href="baa.html">BAA template</a>
+            <a href="privacy.html">Privacy policy</a>
+            <a href="terms.html">Terms of service</a>
         </div>
         <div>
             <h4>Source</h4>

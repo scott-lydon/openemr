@@ -14,17 +14,17 @@
 <body>
 
 <nav class="site-nav">
-    <a class="brand" href="/">
+    <a class="brand" href="index.html">
         <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="14" fill="#6366f1"/><path d="M16 8v16M8 16h16" stroke="white" stroke-width="3" stroke-linecap="round"/></svg>
         Clinical Co-Pilot
     </a>
     <div class="links">
-        <a href="/">Home</a>
-        <a href="/pricing.html">Pricing</a>
-        <a href="/trust.html">Trust</a>
-        <a href="/install.html">Install</a>
-        <a href="/faq.html">FAQ</a>
-        <a class="cta" href="/install.html#download">Download</a>
+        <a href="index.html">Home</a>
+        <a href="pricing.html">Pricing</a>
+        <a href="trust.html">Trust</a>
+        <a href="install.html">Install</a>
+        <a href="faq.html">FAQ</a>
+        <a class="cta" href="install.html#download">Download</a>
     </div>
 </nav>
 
@@ -43,15 +43,20 @@
         <details class="faq-item" open>
             <summary>What does the Co-Pilot actually do?</summary>
             <div class="answer">
-                <p>Two things on every patient visit. First, the pairwise diagnostic cross-check: the clinician clicks one button, the sidecar pulls the chart, and the engine returns a ranked tournament of candidate diagnoses with citations into the patient's own FHIR resources. Second (Pro tier), a chart-error scan that flags internal contradictions like a med recorded as active that the latest diagnosis no longer supports, or units that disagree across encounters.</p>
+                <p>Three checkers, two of them live today:</p>
+                <ul>
+                    <li><strong style="color: var(--text);">Diagnostic Checker (live):</strong> reads the chart, returns a ranked list of candidate diagnoses, each backed by a citation into the patient's own FHIR resources. If it cannot cite, it does not claim.</li>
+                    <li><strong style="color: var(--text);">Chart Error Checker (live, Pro tier):</strong> flags internal contradictions, like a med recorded as active that the latest diagnosis no longer supports, units that disagree across encounters, or an allergy buried three encounters back that contraindicates an active order.</li>
+                    <li><strong style="color: var(--text);">Contraindication Checker (coming soon, Pro tier):</strong> cross-references medications against allergies, conditions, and each other for known interactions.</li>
+                </ul>
                 <p>The clinician decides what to do with the output. The Co-Pilot does not prescribe, order, or modify the chart.</p>
             </div>
         </details>
 
         <details class="faq-item">
-            <summary>Why pairwise comparison and not a ranked list?</summary>
+            <summary>Why is it different from other AI diagnostic tools?</summary>
             <div class="answer">
-                <p>List-style differential diagnosis tools have an order bias: the first-ranked answer wins the clinician's attention even when the confidence gap between it and the second-ranked answer is tiny. A pairwise tournament forces every candidate to be defended against every other one, so the output reflects evidence strength rather than list position. The engine refuses to declare a winner if it cannot cite a FHIR resource for the deciding feature.</p>
+                <p>Two things matter more than any single technique. First, every claim ships with a citation into the patient's own chart. The engine refuses to answer a question it cannot back up from a FHIR resource. Second, every prompt, every answer, and every citation lands in a hash-chained audit log that an auditor can replay without re-running the LLM. Together those make Clinical Co-Pilot defensible during a post-incident review in a way most clinical AI tools are not.</p>
             </div>
         </details>
 
@@ -65,7 +70,7 @@
         <details class="faq-item">
             <summary>Will the Co-Pilot ever write to the chart?</summary>
             <div class="answer">
-                <p>Document ingest (Pro tier) is the only flow that produces structured FHIR write-back, and every suggested resource is shown to the clinician for confirmation before it lands. The diagnostic cross-check and chart-error scan are strictly read-only. There is no automatic charting.</p>
+                <p>Document ingest (Pro tier) is the only flow that produces structured FHIR write-back, and every suggested resource is shown to the clinician for confirmation before it lands. The Diagnostic Checker and Chart Error Checker are strictly read-only. There is no automatic charting.</p>
             </div>
         </details>
 
@@ -75,14 +80,14 @@
             <summary>Is the Co-Pilot HIPAA compliant?</summary>
             <div class="answer">
                 <p>HIPAA does not have a certification you can hand someone. What we can say: the architecture is aligned with the HIPAA Security Rule and the OCR audit protocol. We sign a Business Associate Agreement with every paying customer. OpenAI is on our BAA chain via their Enterprise tier with Zero Data Retention enabled. The audit log meets the seven-year retention requirement.</p>
-                <p>Full posture: <a href="/trust.html">trust.html</a>.</p>
+                <p>Full posture: <a href="trust.html">trust.html</a>.</p>
             </div>
         </details>
 
         <details class="faq-item">
             <summary>Do you sign a BAA?</summary>
             <div class="answer">
-                <p>Yes. Our customer-facing BAA template is at <a href="/baa.html">baa.html</a>. Enterprise tier customers can swap in their own BAA after counsel redlines ours.</p>
+                <p>Yes. Our customer-facing BAA template is at <a href="baa.html">baa.html</a>. Enterprise tier customers can swap in their own BAA after counsel redlines ours.</p>
             </div>
         </details>
 
@@ -140,7 +145,7 @@
         <details class="faq-item">
             <summary>How long is install?</summary>
             <div class="answer">
-                <p>For most clinics: five minutes from zip download to a working button on the patient summary. Step-by-step at <a href="/install.html">install.html</a>.</p>
+                <p>For most clinics: five minutes from zip download to a working button on the patient summary. Step-by-step at <a href="install.html">install.html</a>.</p>
             </div>
         </details>
 
@@ -181,21 +186,21 @@
     <div class="footer-grid">
         <div>
             <strong style="color: var(--text); font-size: 1.05rem;">Clinical Co-Pilot</strong>
-            <p style="margin-top: 8px; color: var(--muted);">Pairwise diagnostic cross-check and chart-error scan for OpenEMR.</p>
+            <p style="margin-top: 8px; color: var(--muted);">AI diagnostic cross-check and chart-error scan for OpenEMR.</p>
         </div>
         <div>
             <h4>Product</h4>
-            <a href="/">Overview</a>
-            <a href="/pricing.html">Pricing</a>
-            <a href="/install.html">Install</a>
-            <a href="/faq.html">FAQ</a>
+            <a href="index.html">Overview</a>
+            <a href="pricing.html">Pricing</a>
+            <a href="install.html">Install</a>
+            <a href="faq.html">FAQ</a>
         </div>
         <div>
             <h4>Trust</h4>
-            <a href="/trust.html">Security overview</a>
-            <a href="/baa.html">BAA template</a>
-            <a href="/privacy.html">Privacy policy</a>
-            <a href="/terms.html">Terms of service</a>
+            <a href="trust.html">Security overview</a>
+            <a href="baa.html">BAA template</a>
+            <a href="privacy.html">Privacy policy</a>
+            <a href="terms.html">Terms of service</a>
         </div>
         <div>
             <h4>Source</h4>
