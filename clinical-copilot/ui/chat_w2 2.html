@@ -341,7 +341,7 @@ function seedFromCopilotCache() {
     if (sym.length) lines.push(`**Presenting:** ${sym.join('; ')}`);
   }
   if (cached.dx && cached.dx.candidates) {
-    // The pairwise comparator emits .label (candidate name) and
+    // The candidate comparator emits .label (candidate name) and
     // .max_likelihood_pct (the highest per-symptom likelihood). Older
     // shapes used .probability_pct / .candidate_label; tolerate both.
     const top = cached.dx.candidates.slice(0, 3)
@@ -562,7 +562,7 @@ async function sendTurn() {
   try {
     // Use the Week 2 multi-agent graph route. It runs the supervisor's
     // deterministic preflight + LLM judge fallback, the worker
-    // sequence (intake_extractor / evidence_retriever / pairwise_comparer
+    // sequence (intake_extractor / evidence_retriever / AI_comparer
     // depending on intent), the evidence packet builder, the verifier,
     // and the response formatter — and returns the rendered text plus
     // the supervisor's decision metadata for display.

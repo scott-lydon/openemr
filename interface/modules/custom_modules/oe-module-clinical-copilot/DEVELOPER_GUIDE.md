@@ -94,9 +94,9 @@ pytest evals/
 pytest tests/
 ```
 
-## 4. Adding a new pairwise prompt
+## 4. Adding a new diagnostic prompt
 
-Pairwise prompts live in `clinical-copilot/sidecar/agent/prompts/`. Each file is a single Python module exporting a `Prompt` value object. The aggregator picks prompts based on the request's `purpose_of_use`.
+AI prompts live in `clinical-copilot/sidecar/agent/prompts/`. Each file is a single Python module exporting a `Prompt` value object. The aggregator picks prompts based on the request's `purpose_of_use`.
 
 To add a new use case:
 

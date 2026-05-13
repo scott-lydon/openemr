@@ -171,7 +171,7 @@ source .venv/bin/activate
 python evals/run_evals.py
 ```
 
-Layer 1 (pairwise unit tests) + Layer 2 (patient scenarios — including
+Layer 1 (diagnostic unit tests) + Layer 2 (patient scenarios — including
 the gout and osteopenia cases above) + Layer 3 (adversarial: prompt
 injection, scope escalation, missing data) all run against the
 deterministic mock LLM. Expected:

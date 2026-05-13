@@ -10,7 +10,7 @@ This page summarizes the security posture of the Clinical Co-Pilot service. It e
 │                         │         │   Sidecar (us)          │
 │  ┌──────────────────┐   │  FHIR   │  ┌─────────────────┐   │
 │  │ Patient chart    │◄──┼─────────┼──┤ Snapshot fan-out│   │
-│  │ (PHI)            │   │ TLS 1.2 │  │ Pairwise engine │   │
+│  │ (PHI)            │   │ TLS 1.2 │  │ AI engine │   │
 │  └──────────────────┘   │ SMART   │  │ Audit log       │   │
 │  ┌──────────────────┐   │ Backend │  │ License check   │   │
 │  │ oe-module-       │   │ Svcs    │  └─────────────────┘   │

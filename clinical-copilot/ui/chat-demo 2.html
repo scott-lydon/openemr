@@ -72,7 +72,7 @@
 <body>
 <div class="wrap">
   <h1>Clinical Co-Pilot <span style="font-size:11px; vertical-align:middle; padding:2px 8px; border-radius:99px; background:#fde68a; color:#92400e; margin-left:8px;">DEMO (baked responses)</span></h1>
-  <div class="sub">Pairwise comparison engine for OpenEMR. Read-only. Citations required.</div>
+  <div class="sub">AI diagnostic engine for OpenEMR. Read-only. Citations required.</div>
 
   <div class="controls">
     <select id="patient" aria-label="Patient">
@@ -118,7 +118,7 @@ async function run() {
   const purpose = $('purpose').value;
   if (!patient) return;
   $('run').disabled = true;
-  $('output').innerHTML = '<pre>Running pairwise engine…</pre>';
+  $('output').innerHTML = '<pre>Running AI engine…</pre>';
   $('meta').textContent = '';
   try {
     const res = await fetch(`${sidecarBase}/chat`, {

@@ -22,7 +22,7 @@ less than one pair judgment per turn.
 
 ## Per-visit token budget
 
-The pairwise comparison engine dispatches ``S × C`` calls for Use Case A
+The AI cross-check engine dispatches ``S × C`` calls for Use Case A
 (``S`` = presenting symptoms, ``C`` = candidate findings) and
 ``F × (F − 1)`` for Use Case B (``F`` = documented findings). For a
 typical Dr. M. patient (3 presenting symptoms, 12 active problems, 8 active

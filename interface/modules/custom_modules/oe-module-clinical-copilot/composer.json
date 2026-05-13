@@ -1,6 +1,6 @@
 {
     "name": "openemr/oe-module-clinical-copilot",
-    "description": "Clinical Co-Pilot for OpenEMR. Pairwise diagnostic cross-check and chart-error scan over a separately-hosted FHIR-isolated sidecar. The PHP module is GPL-3.0; the sidecar is a private upstream that talks to OpenEMR only over FHIR.",
+    "description": "Clinical Co-Pilot for OpenEMR. AI diagnostic cross-check and chart-error scan over a separately-hosted FHIR-isolated sidecar. The PHP module is GPL-3.0; the sidecar is a private upstream that talks to OpenEMR only over FHIR.",
     "type": "openemr-module",
     "license": "GPL-3.0-or-later",
     "authors": [

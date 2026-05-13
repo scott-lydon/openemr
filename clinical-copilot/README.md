@@ -24,9 +24,6 @@ clinical-copilot/
 ├── bff/                    Backend-for-Frontend (OAuth2 + PKCE + policy)
 ├── ui/                     Minimal chat surface (single-file HTML)
 ├── evals/                  3-layer eval suite + CI gate
-│   ├── layer1_pairwise/        Unit-style golden pairwise judgments
-│   ├── layer2_patient_scenarios/  Synthetic patient charts (gout, osteo, …)
-│   └── layer3_adversarial/     Prompt injection, scope escalation, missing-data
 ├── fixtures/patients/      Synthetic seed cases referenced in ARCHITECTURE.md
 └── tests/                  Pytest unit + integration tests
 ```
@@ -129,10 +126,10 @@ sequence so the next run cannot get it wrong.
 
 Trace every capability back to `USERS.md`:
 
-- **Use Case A — Pre-visit Diagnostic Cross-Check.** Pairwise comparison of
+- **Use Case A — Pre-visit Diagnostic Cross-Check.** AI cross-check of
   presenting symptoms × candidate explanations from the patient's chart.
 - **Use Case B — Chart-Error / Conflict Detection.** Same engine, different
-  prompt; pairwise comparison of finding × finding for biological / temporal /
+  prompt; AI cross-check of finding × finding for biological / temporal /
   pharmacological inconsistency.
 - **Use Case C — Mid-Visit Clarifier.** Tool-use against the patient snapshot;
   cites source row and date.
@@ -140,7 +137,7 @@ Trace every capability back to `USERS.md`:
 ## Definition of useful (the bar from `USERS.md` Section 4)
 
 1. Pre-visit prep on a 20-patient day drops from 20 minutes to 12 minutes.
-2. At least one pairwise cross-check per week surfaces a finding the clinician
+2. At least one AI cross-check per week surfaces a finding the clinician
    had not considered, and they agree it was relevant.
 3. Chart-error flag precision above 80% on clinician review.
 
@@ -149,7 +146,7 @@ Trace every capability back to `USERS.md`:
 - Sidecar, not in-process. Python ecosystem; isolated blast radius. (§1.2)
 - LangGraph orchestration; OpenAI `gpt-5` on Enterprise BAA + ZDR primary,
   Azure OpenAI fallback. (§1.3, §1.4)
-- Deterministic pairwise comparison engine, **not** free-form holistic
+- Deterministic AI cross-check engine, **not** free-form holistic
   prompting. (§4.1, §USERS 3.1)
 - Verification is a separate stage with source attribution + curated rule
   store, not a prompt instruction. (§5)
