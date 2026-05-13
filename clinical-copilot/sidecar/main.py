@@ -31,6 +31,7 @@ from sidecar.api.citations import (
     get_pdf_source_for_citation,
     router as citations_router,
 )
+from sidecar.api.admin_licenses import router as admin_licenses_router
 from sidecar.api.billing import router as billing_router
 from sidecar.api.smart_launch import router as smart_launch_router
 from sidecar.api.documents import (
@@ -324,6 +325,10 @@ def create_app() -> FastAPI:
     app.include_router(documents_router)
     app.include_router(citations_router)
     app.include_router(billing_router)
+    # admin_licenses_router enforces its own auth check (COPILOT_ADMIN_TOKEN);
+    # mounting it unconditionally is safe because the endpoint refuses every
+    # request when the env var is unset.
+    app.include_router(admin_licenses_router)
     if os.environ.get("COPILOT_SMART_LAUNCH", "").lower() == "true":
         app.include_router(smart_launch_router)
     _wire_ingest_dependencies(app, settings)
