@@ -39,6 +39,12 @@ from sidecar.audit import InMemoryAuditLog
 from sidecar.auth import TaskTokenClaims, require_task_token
 from sidecar.licensing import license_check
 from sidecar.config import get_settings
+from sidecar.sanitize.injection_guard import (
+    InjectionGuardError,
+    check_response_does_not_leak,
+    check_user_message,
+    raise_if_blocked,
+)
 from sidecar.openemr_oauth import (
     OpenEMRConfigurationError,
     OpenEMRTokenCache,
@@ -327,6 +333,75 @@ async def chat(
             },
         )
 
+    # W3 injection guard — refuse the request at the boundary when the
+    # message references a foreign Patient/<id> or contains an
+    # instruction-shaped phrase. Closes ADV-2026-0053, ADV-2026-0054,
+    # ADV-2026-0055. The guard is intentionally deterministic so a
+    # block here cannot itself be talked out of refusing.
+    _injection_session_id = _resolve_session_id(body.session_id, claims)
+    if body.message and body.message.strip():
+        scan = check_user_message(
+            message=body.message,
+            patient_id=claims.patient_id,
+            session_id=_injection_session_id,
+        )
+        if scan.blocked:
+            logger.warning(
+                "injection_guard_blocked_input",
+                extra={
+                    "rule": scan.rule,
+                    "patient_id": claims.patient_id,
+                    "session_id": _injection_session_id,
+                    "user_id": claims.user_id,
+                    "purpose": body.purpose,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "injection_guard_blocked",
+                    "rule": scan.rule,
+                    "message": scan.reason,
+                },
+            )
+
+    # W3 turn-budget guard — cap the number of recorded turns per
+    # session. Closes the cost_amplification.repeat_chart_payload class
+    # of attacks (recursive lookups, repeated chart-summary requests).
+    _MAX_TURNS_PER_SESSION = 30
+    _prior_turn_count = len(
+        (memory or get_default_memory()).turns(
+            user_id=claims.user_id,
+            patient_id=body.patient_id,
+            session_id=_injection_session_id,
+        )
+    )
+    if _prior_turn_count >= _MAX_TURNS_PER_SESSION:
+        logger.warning(
+            "turn_budget_exceeded",
+            extra={
+                "patient_id": claims.patient_id,
+                "session_id": _injection_session_id,
+                "user_id": claims.user_id,
+                "purpose": body.purpose,
+                "prior_turn_count": _prior_turn_count,
+                "max_turns": _MAX_TURNS_PER_SESSION,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "error": "turn_budget_exceeded",
+                "message": (
+                    f"session {_injection_session_id!r} already recorded "
+                    f"{_prior_turn_count} turns (cap={_MAX_TURNS_PER_SESSION}). "
+                    "Start a fresh session to continue. This cap closes the "
+                    "cost-amplification attack class against repeated "
+                    "chart-summary loops."
+                ),
+            },
+        )
+
     from sidecar.agent.graph import make_provider
 
     settings = get_settings()
@@ -424,6 +499,41 @@ async def chat(
                 role="assistant", content=assistant_summary,
                 ts_unix=now, purpose=body.purpose,
             ),
+        )
+
+    # W3 outbound leakage guard — strip the response if it echoes a
+    # foreign Patient/<id>. This is a defense-in-depth check after the
+    # verifier has already run; it catches any path where the model
+    # surfaces a cross-patient identifier despite source attribution.
+    _response_text_for_scan = " ".join([
+        str(response.verdict or ""),
+        str(getattr(response, "text", "") or ""),
+        *[str(c.get("rationale") or c.get("label") or "") for c in response.candidates],
+        *[str(g) for g in response.data_gaps],
+    ])
+    response_scan = check_response_does_not_leak(
+        response_text=_response_text_for_scan,
+        patient_id=claims.patient_id,
+        session_id=session_id,
+    )
+    if response_scan.blocked:
+        logger.warning(
+            "injection_guard_blocked_response",
+            extra={
+                "rule": response_scan.rule,
+                "patient_id": claims.patient_id,
+                "session_id": session_id,
+                "user_id": claims.user_id,
+                "purpose": body.purpose,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error": "injection_guard_blocked_response",
+                "rule": response_scan.rule,
+                "message": response_scan.reason,
+            },
         )
 
     logger.info(
