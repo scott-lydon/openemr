@@ -60,12 +60,36 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          printf '%s\n' "${GITLAB_SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          # Use printenv to avoid shell-expansion gotchas (printf can mangle
+          # backslashes in the key body; cat-via-env preserves the secret as
+          # delivered by Actions).
+          printenv GITLAB_SSH_PRIVATE_KEY > ~/.ssh/id_ed25519
+
+          # SSH requires keys to end with a newline. If the secret was stored
+          # without one, append it; otherwise leave alone to avoid double LF.
+          if [ -n "$(tail -c 1 ~/.ssh/id_ed25519)" ]; then
+            echo "" >> ~/.ssh/id_ed25519
+          fi
           chmod 600 ~/.ssh/id_ed25519
 
+          # Sanity check: derive public key from private. If this fails the
+          # secret is corrupted (line endings, base64 padding, or transport).
+          echo "=== private key sanity ==="
+          echo "wc:    $(wc -lc < ~/.ssh/id_ed25519 | tr -s ' ')"
+          echo "head1: $(head -1 ~/.ssh/id_ed25519 | head -c 35)..."
+          echo "tail1: ...$(tail -1 ~/.ssh/id_ed25519 | tail -c 30)"
+          if ! DERIVED_PUB="$(ssh-keygen -y -f ~/.ssh/id_ed25519 2>&1)"; then
+            echo "::error::Private key in GITLAB_SSH_PRIVATE_KEY secret is malformed:"
+            echo "${DERIVED_PUB}"
+            echo "::error::Re-upload it from your Mac with:"
+            echo "::error::  gh secret set GITLAB_SSH_PRIVATE_KEY --repo scott-lydon/openemr < ~/.ssh/openemr-mirror/id_ed25519"
+            exit 1
+          fi
+          echo "derived pub: ${DERIVED_PUB}"
+          echo "(if this fingerprint doesn't match the deploy key on GitLab, the wrong key was uploaded.)"
+          echo "${DERIVED_PUB}" | ssh-keygen -lf -
+
           # Pin labs.gauntletai.com host keys so we never accept-on-first-use.
-          # ssh-keyscan output is logged so a host-key change is auditable in
-          # the workflow run.
           if ! ssh-keyscan -t rsa,ecdsa,ed25519 labs.gauntletai.com 2>/tmp/keyscan.err >> ~/.ssh/known_hosts; then
             echo "::error::ssh-keyscan failed for labs.gauntletai.com:"
             cat /tmp/keyscan.err
@@ -76,6 +100,32 @@ jobs:
 
           echo "host keys recorded:"
           ssh-keygen -l -f ~/.ssh/known_hosts || true
+
+          # Verify SSH-level auth before we try git operations. This isolates
+          # "key works but git push fails" from "key doesn't auth at all".
+          echo "=== ssh -T git@labs.gauntletai.com (BatchMode, IdentitiesOnly) ==="
+          if SSH_OUT="$(ssh -i ~/.ssh/id_ed25519 \
+                            -o IdentitiesOnly=yes \
+                            -o BatchMode=yes \
+                            -o StrictHostKeyChecking=yes \
+                            -T git@labs.gauntletai.com 2>&1)"; then
+            echo "${SSH_OUT}"
+          else
+            RC=$?
+            echo "${SSH_OUT}"
+            # GitLab's ssh -T returns non-zero even on success; only fail if
+            # the message looks like a real auth failure.
+            if echo "${SSH_OUT}" | grep -qi "permission denied\|publickey"; then
+              echo "::error::SSH key authentication to labs.gauntletai.com failed."
+              echo "::error::The key derived above is not registered as a Deploy Key (with"
+              echo "::error::write access) on the GitLab project, or has not propagated yet."
+              echo "::error::Open https://labs.gauntletai.com/scottlydon/openemr/-/settings/repository"
+              echo "::error::and verify the Deploy Keys section contains the fingerprint shown above"
+              echo "::error::with 'Grant write permissions' enabled."
+              exit 1
+            fi
+            echo "(non-zero exit $RC is normal for 'ssh -T' against GitLab when auth succeeds)"
+          fi
 
       - name: Add gitlab remote
         run: |
