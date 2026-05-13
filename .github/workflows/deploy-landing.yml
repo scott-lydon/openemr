@@ -1,0 +1,113 @@
+name: Deploy Clinical Co-Pilot sales site
+
+# Publishes clinical-copilot/landing/ to GitHub Pages on every push to
+# master, and on every release tag so the live site always shows the
+# latest downloadable module zip.
+#
+# The build script (clinical-copilot/landing/build.sh) packages the
+# module folder into a downloadable zip with a SHA-256 sidecar and
+# copies the legal markdown into landing/legal/ for in-browser viewing.
+#
+# Failure modes intentionally surface loudly: every step has a clear
+# name so an operator scanning the GitHub Actions log can pinpoint the
+# failure within seconds.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Override version label (default: from tag or composer.json)"
+        required: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Avoid two concurrent deploys clobbering each other's gh-pages writes.
+concurrency:
+  group: "pages-clinical-copilot"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install zip + jq
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zip jq
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.version }}" ]]; then
+            version="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version=""
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build sales site + module zip
+        run: |
+          set -euo pipefail
+          chmod +x clinical-copilot/landing/build.sh
+          clinical-copilot/landing/build.sh "${{ steps.version.outputs.version }}"
+
+      - name: Verify build output
+        run: |
+          set -euo pipefail
+          # The site cannot deploy without these files. Fail loudly if
+          # any are missing so the failure is visible in the GitHub
+          # Actions log without having to dig into deploy errors.
+          for f in \
+            clinical-copilot/landing/index.html \
+            clinical-copilot/landing/pricing.html \
+            clinical-copilot/landing/install.html \
+            clinical-copilot/landing/trust.html \
+            clinical-copilot/landing/faq.html \
+            clinical-copilot/landing/baa.html \
+            clinical-copilot/landing/privacy.html \
+            clinical-copilot/landing/terms.html \
+            clinical-copilot/landing/assets/styles.css \
+            clinical-copilot/landing/legal/BAA_TEMPLATE.md \
+            clinical-copilot/landing/legal/PRIVACY_POLICY.md \
+            clinical-copilot/landing/legal/TERMS_OF_SERVICE.md \
+            clinical-copilot/landing/downloads/oe-module-clinical-copilot-latest.zip \
+            clinical-copilot/landing/downloads/oe-module-clinical-copilot-latest.zip.sha256
+          do
+            if [[ ! -s "${f}" ]]; then
+              echo "::error::Required artifact missing or empty: ${f}"
+              exit 1
+            fi
+          done
+          ls -la clinical-copilot/landing/downloads/
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: clinical-copilot/landing
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
