@@ -1,0 +1,147 @@
+name: Mirror master to GitLab
+
+# Pushes the GitHub master branch to labs.gauntletai.com:scottlydon/openemr
+# whenever master moves on GitHub. This includes merges performed via the
+# GitHub web UI, which would otherwise never reach GitLab.
+#
+# Setup requirements (one-time, performed when this workflow was added):
+#   1. Dedicated ed25519 SSH keypair generated at
+#      ~/.ssh/openemr-mirror/id_ed25519 on the developer's Mac.
+#   2. Public key uploaded to the GitLab project Settings > Repository >
+#      Deploy Keys with "Grant write permissions to this key" enabled.
+#   3. Private key stored as the GitHub Actions repository secret
+#      GITLAB_SSH_PRIVATE_KEY on scott-lydon/openemr.
+#
+# Failure modes are deliberately loud:
+#   - If gitlab/master has commits not on github/master, this workflow fails
+#     with a non-fast-forward error rather than silently force-pushing.
+#     Resolve by merging gitlab/master back into github/master, then push.
+#   - If the deploy key is missing from GitLab or lacks write permissions,
+#     the push step fails with "Permission denied (publickey)" or
+#     "remote: You are not allowed to push code to this project".
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch: {}
+
+concurrency:
+  # Serialize mirror runs so concurrent merges to master don't race.
+  group: mirror-master-to-gitlab
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Push master to GitLab
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          # Full history so the push isn't a shallow clone.
+          fetch-depth: 0
+          ref: master
+
+      - name: Configure SSH for labs.gauntletai.com
+        env:
+          GITLAB_SSH_PRIVATE_KEY: ${{ secrets.GITLAB_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GITLAB_SSH_PRIVATE_KEY}" ]; then
+            echo "::error::GITLAB_SSH_PRIVATE_KEY secret is empty or missing."
+            echo "::error::Set it on scott-lydon/openemr via:"
+            echo "::error::  gh secret set GITLAB_SSH_PRIVATE_KEY --repo scott-lydon/openemr < ~/.ssh/openemr-mirror/id_ed25519"
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "${GITLAB_SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          # Pin labs.gauntletai.com host keys so we never accept-on-first-use.
+          # ssh-keyscan output is logged so a host-key change is auditable in
+          # the workflow run.
+          if ! ssh-keyscan -t rsa,ecdsa,ed25519 labs.gauntletai.com 2>/tmp/keyscan.err >> ~/.ssh/known_hosts; then
+            echo "::error::ssh-keyscan failed for labs.gauntletai.com:"
+            cat /tmp/keyscan.err
+            echo "::error::Check whether labs.gauntletai.com is reachable from GitHub Actions runners."
+            exit 1
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
+          echo "host keys recorded:"
+          ssh-keygen -l -f ~/.ssh/known_hosts || true
+
+      - name: Add gitlab remote
+        run: |
+          set -euo pipefail
+          git remote add gitlab git@labs.gauntletai.com:scottlydon/openemr.git
+          git remote -v
+
+      - name: Push HEAD to gitlab/master
+        run: |
+          set -euo pipefail
+
+          echo "Local HEAD on master:"
+          git log --oneline -1 HEAD
+
+          # Fetch first so we can report divergence cleanly before pushing.
+          if ! git fetch gitlab master --quiet 2>/tmp/fetch.err; then
+            echo "::error::Could not fetch gitlab/master:"
+            cat /tmp/fetch.err
+            echo "::error::Likely causes: deploy key missing from GitLab project,"
+            echo "::error::deploy key missing write permission, or labs.gauntletai.com"
+            echo "::error::is unreachable. See workflow file header for setup steps."
+            exit 1
+          fi
+
+          GITHUB_HEAD="$(git rev-parse HEAD)"
+          GITLAB_HEAD="$(git rev-parse FETCH_HEAD)"
+          echo "github master HEAD: ${GITHUB_HEAD}"
+          echo "gitlab master HEAD: ${GITLAB_HEAD}"
+
+          if [ "${GITHUB_HEAD}" = "${GITLAB_HEAD}" ]; then
+            echo "Already in sync, nothing to push."
+            exit 0
+          fi
+
+          BEHIND="$(git rev-list --count ${GITHUB_HEAD}..${GITLAB_HEAD})"
+          AHEAD="$(git rev-list --count ${GITLAB_HEAD}..${GITHUB_HEAD})"
+          echo "github master is ${AHEAD} ahead and ${BEHIND} behind gitlab master."
+
+          if [ "${BEHIND}" -gt 0 ]; then
+            echo "::error::gitlab/master has ${BEHIND} commits not on github/master."
+            echo "::error::Refusing to force-push. Resolve manually:"
+            echo "::error::  git fetch gitlab master"
+            echo "::error::  git merge gitlab/master   # or rebase, then push to GitHub"
+            echo "::error::Top divergent commits on gitlab/master:"
+            git log --oneline ${GITHUB_HEAD}..${GITLAB_HEAD} | head -20
+            exit 1
+          fi
+
+          if ! git push gitlab "HEAD:refs/heads/master" 2>/tmp/push.err; then
+            echo "::error::git push to gitlab/master failed:"
+            cat /tmp/push.err
+            if grep -q "Permission denied" /tmp/push.err; then
+              echo "::error::Diagnosis: deploy key not registered or lacks write access."
+              echo "::error::Fix: GitLab > scottlydon/openemr > Settings > Repository >"
+              echo "::error::Deploy Keys > add the public key from ~/.ssh/openemr-mirror/id_ed25519.pub"
+              echo "::error::with 'Grant write permissions' enabled."
+            elif grep -q "You are not allowed to push" /tmp/push.err; then
+              echo "::error::Diagnosis: deploy key exists but is not allowed to push to a"
+              echo "::error::protected branch. Fix: GitLab > Settings > Repository >"
+              echo "::error::Protected Branches and add this deploy key to the master allow-list,"
+              echo "::error::or temporarily unprotect master."
+            elif grep -q "non-fast-forward\|rejected" /tmp/push.err; then
+              echo "::error::Diagnosis: gitlab/master diverged between fetch and push."
+              echo "::error::Re-run the workflow."
+            fi
+            exit 1
+          fi
+
+          echo "Successfully mirrored ${GITHUB_HEAD} to gitlab/master."
