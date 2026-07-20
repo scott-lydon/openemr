@@ -34,7 +34,9 @@ The private key bytes are NEVER included in any error message.
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
+import stat as stat_mod
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,6 +112,53 @@ class OpenEMRConfigurationError(RuntimeError):
     """
 
 
+def _diagnose_key_path(key_path: Path) -> str:
+    """Build a diagnostic block explaining why a key file isn't accessible.
+
+    Compares the running process's effective uid/gid against the file's
+    and parent directory's owner uid/gid and mode. Returns a multi-line
+    string the operator can paste into a chown/chmod command.
+
+    Why this exists: a sidecar deployed to a Docker host with the .keys/
+    directory bind-mounted from the host filesystem is fully at the
+    mercy of host-side ownership — the container's user namespace does
+    NOT remap uids unless `userns-remap` is configured (it usually
+    isn't). So if the setup script ran as host uid 0 (root) and the
+    container runs as uid 10001 (the 'copilot' user baked into the
+    Dockerfile), reading the key will fail with PermissionError even
+    though `ls -la` from inside the container shows the file present.
+
+    Empirically this happened on the Hetzner deploy 2026-05-08 and the
+    sidecar stayed broken for 3+ days before someone noticed, because
+    the only symptom was HTTP 500 on the user-facing page and the
+    container's healthcheck didn't exercise the token path. This
+    diagnostic exists so the next person sees the answer in one log
+    line.
+    """
+    proc_uid = os.geteuid()
+    proc_gid = os.getegid()
+    lines: list[str] = [
+        f"sidecar process: uid={proc_uid} gid={proc_gid}",
+    ]
+    for label, p in (("key file", key_path), ("parent dir", key_path.parent)):
+        try:
+            st = os.stat(p)
+        except OSError as inspect_exc:
+            lines.append(f"{label} {p!s}: stat failed: {inspect_exc}")
+            continue
+        lines.append(
+            f"{label} {p!s}: owner={st.st_uid}:{st.st_gid} "
+            f"mode={stat_mod.filemode(st.st_mode)} ({oct(st.st_mode & 0o777)})"
+        )
+    lines.append(
+        "If owner uid does not match sidecar uid, fix on the docker "
+        "host (NOT inside the container) with: "
+        f"chown -R {proc_uid}:{proc_gid} {key_path.parent!s} && "
+        f"chmod 0500 {key_path.parent!s} && chmod 0400 {key_path!s}"
+    )
+    return "\n  ".join(lines)
+
+
 @dataclass(frozen=True)
 class _CachedToken:
     """Internal cache entry for a system access token."""
@@ -146,7 +195,22 @@ class OpenEMRTokenCache:
                 "generate the RSA keypair and populate .env"
             )
         key_path = Path(key_path_str).expanduser()
-        if not key_path.exists():
+        # Wrap Path.exists() in try/except: Path.exists() internally
+        # calls os.stat(), which raises PermissionError (not a return
+        # value of False) if the process cannot stat the file or its
+        # parent directory. Without this wrapper, a perms misconfig on
+        # the host produces an unhandled PermissionError that bubbles
+        # up as a bare HTTP 500 with no actionable message — that's the
+        # 2026-05-08 outage signature. The diagnostic block below tells
+        # the operator exactly which uid owns what.
+        try:
+            key_file_present = key_path.exists()
+        except PermissionError as exc:
+            raise OpenEMRConfigurationError(
+                f"PermissionError stat()ing {key_path!s}: {exc}.\n  "
+                + _diagnose_key_path(key_path)
+            ) from exc
+        if not key_file_present:
             raise OpenEMRConfigurationError(
                 f"COPILOT_OPENEMR_PRIVATE_KEY_PATH points at {key_path!s} "
                 "but no file is there. Run "
@@ -157,9 +221,8 @@ class OpenEMRTokenCache:
             self._private_key_pem = key_path.read_bytes()
         except OSError as exc:
             raise OpenEMRConfigurationError(
-                f"could not read {key_path!s}: {exc}. The setup script "
-                "stores the key with mode 0600; run as the same user "
-                "that owns the file."
+                f"could not read {key_path!s}: {exc}.\n  "
+                + _diagnose_key_path(key_path)
             ) from exc
         if not self._private_key_pem.startswith(b"-----BEGIN"):
             raise OpenEMRConfigurationError(
